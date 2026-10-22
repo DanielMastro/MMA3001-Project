@@ -9,489 +9,254 @@ from pathlib import Path
 
 csv_file = r'C:\Users\danma\Documents\school\Monash\Third_Year\Sem_2\NMML\Project\MMA3001-Project\Input_Data\PMSM_2D_FEA_Data.csv'
 
-# Remove initial transient period
+turns_ratio   = 33 / 2     # N_real / N_model  (linear-in-turns for flux/voltage)
+stack_factor  = 0.9        # 2D -> 3D correction, applied to field quantities only 
+pole_pairs    = 5          # <-- SET THIS. Needed for torque. Guessing wrecks torque.
+
+# How to get the rotor electrical angle for the Park transform.
+#   'from_flux' : read it from the no-load (J=0) flux direction. At zero current
+#                 the flux linkage points along the d-axis, so its angle IS the
+#                 rotor position at each step. Works for a rotating rotor (incl.
+#                 the 0.000001 RPM quasi-static sweep) with no need to know the
+#                 span or reference offset. RECOMMENDED.
+#   'fixed'     : rotor held at one position (constant angle + auto-align).
+#   'sweep'     : reconstruct angle geometrically from step index (needs the two
+#                 settings below to be correct).
+rotor_mode      = 'from_flux'
+rotor_ref_deg   = 0.0      # only used by 'fixed'/'sweep': d-axis reference
+auto_align      = True     # 'fixed' only: snap so no-load psi_q = 0
+
+# Only used when rotor_mode == 'sweep'
 init_period_to_remove = 0.5
-num_periods = 1.5
+num_periods           = 1.5
+elec_deg_per_cycle    = 360.0   # electrical degrees spanned by one stored cycle
 
-Factor2Dto3D = 0.9
-# ASSUMPTION:
-# TimingAdjustment = 0 deg corresponds to pure Q-axis current
-#
-# Id = -I*sin(angle)
-# Iq =  I*cos(angle)
-#
-##############################################################################
-
-##############################################################################
-# HELPER FUNCTIONS
-##############################################################################
-
-def abc_to_alphabeta(a, b, c):
-
-    alpha = (2.0/3.0) * (a - 0.5*b - 0.5*c)
-
-    beta = (2.0/3.0) * ((np.sqrt(3)/2.0) * (b - c))
-
-    return alpha, beta
+# ============================================================================
+# PARK / CLARKE (amplitude-invariant, 2/3 convention)
+# ============================================================================
+def park_vec(a, b, c, theta):
+    """abc -> dq0 for a vector quantity (flux, current, voltage)."""
+    th = theta
+    d = (2/3) * (a*np.cos(th) + b*np.cos(th - 2*np.pi/3) + c*np.cos(th + 2*np.pi/3))
+    q = -(2/3) * (a*np.sin(th) + b*np.sin(th - 2*np.pi/3) + c*np.sin(th + 2*np.pi/3))
+    z = (1/3) * (a + b + c)
+    return d, q, z
 
 
-def park_transform(alpha, beta, theta):
-
-    d = alpha*np.cos(theta) + beta*np.sin(theta)
-
-    q = -alpha*np.sin(theta) + beta*np.cos(theta)
-
-    return d, q
-
-
-##############################################################################
-# LOAD DATA
-##############################################################################
-
-print("Loading CSV...")
-
-raw_data = pd.read_csv(csv_file)
-
-##############################################################################
-# REMOVE INITIAL PERIOD (SAME STYLE AS YOUR EXISTING CODE)
-##############################################################################
-
-n_steps = int(raw_data["NStepsPerElectricalCycle []"].iloc[0])
-
-remove_fraction = init_period_to_remove / num_periods
-
-remove_rows = int(np.floor(n_steps * remove_fraction))
-
-indices = (
-    np.arange(len(raw_data))
-    .reshape(-1, n_steps + 1)[:, remove_rows:]
-    .flatten()
-)
-
-data = raw_data.iloc[indices].copy()
-
-print(f"Rows after filtering = {len(data)}")
-
-##############################################################################
-# UNIT CONVERSIONS
-##############################################################################
-
-# Inductances
-
-data["Laa"] = data["L(Phase_A,Phase_A) [uH]"] * 1e-6 *(33/2)**2 / (np.sqrt(2) * Factor2Dto3D)
-data["Lbb"] = data["L(Phase_B,Phase_B) [uH]"] * 1e-6 *(33/2)**2 / (np.sqrt(2) * Factor2Dto3D)
-data["Lcc"] = data["L(Phase_C,Phase_C) [uH]"] * 1e-6 *(33/2)**2 / (np.sqrt(2) * Factor2Dto3D)
-
-data["Lab"] = data["L(Phase_A,Phase_B) [nH]"] * 1e-9 *(33/2)**2 / (np.sqrt(2) * Factor2Dto3D)
-data["Lac"] = data["L(Phase_A,Phase_C) [nH]"] * 1e-9 *(33/2)**2 / (np.sqrt(2) * Factor2Dto3D)
-
-data["Lba"] = data["L(Phase_B,Phase_A) [nH]"] * 1e-9 *(33/2)**2 / (np.sqrt(2) * Factor2Dto3D)
-data["Lbc"] = data["L(Phase_C,Phase_B) [nH]"] * 1e-9 *(33/2)**2 / (np.sqrt(2) * Factor2Dto3D)
-
-data["Lca"] = data["L(Phase_C,Phase_A) [nH]"] * 1e-9 *(33/2)**2 / (np.sqrt(2) * Factor2Dto3D)
-data["Lcb"] = data["L(Phase_B,Phase_C) [nH]"] * 1e-9 *(33/2)**2 / (np.sqrt(2) * Factor2Dto3D)
-
-# Currents
-
-data["Ia"] = data["InputCurrent(Phase_A) [mA]"] * 1e-3 *(2/33) / (np.sqrt(2) * Factor2Dto3D)
-data["Ib"] = data["InputCurrent(Phase_B) [mA]"] * 1e-3 *(2/33) / (np.sqrt(2) * Factor2Dto3D)
-data["Ic"] = data["InputCurrent(Phase_C) [mA]"] * 1e-3 *(2/33) / (np.sqrt(2) * Factor2Dto3D)
-
-# Voltages
-
-data["Ea"] = data["InducedVoltage(Phase_A) [uv]"] * 1e-6 *(33/2) / (np.sqrt(2) * Factor2Dto3D)
-data["Eb"] = data["InducedVoltage(Phase_B) [uv]"] * 1e-6 *(33/2) / (np.sqrt(2) * Factor2Dto3D)
-data["Ec"] = data["InducedVoltage(Phase_C) [uv]"] * 1e-6 *(33/2) / (np.sqrt(2) * Factor2Dto3D)
-
-##############################################################################
-# ELECTRICAL ANGLE
-#
-# One electrical cycle stored as:
-# 0, 7.5, 15, ... , 180
-#
-# We reconstruct electrical angle from step index.
-##############################################################################
-
-
-data["ElectricalAngle_deg"] = (
-    data["TimingAdjustment [deg]"]
-)
-
-data["ElectricalAngle_rad"] = np.deg2rad(
-    data["ElectricalAngle_deg"]
-)
-
-##############################################################################
-# DQ FLUX LINKAGE
-##############################################################################
-
-psi_d = []
-psi_q = []
-
-for _, row in data.iterrows():
-
-    alpha, beta = abc_to_alphabeta(
-        row["FluxLinkage(Phase_A) [Wb]"],
-        row["FluxLinkage(Phase_B) [Wb]"],
-        row["FluxLinkage(Phase_C) [Wb]"]
-    )
-
-    d, q = park_transform(
-        alpha,
-        beta,
-        row["ElectricalAngle_rad"]
-    )
-
-    psi_d.append(d)
-    psi_q.append(q)
-
-data["Psi_d"] = psi_d
-data["Psi_q"] = psi_q
-
-##############################################################################
-# DQ BEMF
-##############################################################################
-
-bemf_d = []
-bemf_q = []
-
-for _, row in data.iterrows():
-
-    alpha, beta = abc_to_alphabeta(
-        row["Ea"],
-        row["Eb"],
-        row["Ec"]
-    )
-
-    d, q = park_transform(
-        alpha,
-        beta,
-        row["ElectricalAngle_rad"]
-    )
-
-    bemf_d.append(d)
-    bemf_q.append(q)
-
-data["Bemf_d"] = bemf_d
-data["Bemf_q"] = bemf_q
-
-##############################################################################
-# PARK TRANSFORM THE INDUCTANCE MATRIX
-##############################################################################
-
-Ld_matrix = []
-Lq_matrix = []
-
-for _, row in data.iterrows():
-
-    theta = row["ElectricalAngle_rad"]
-
-    T = (2/3) * np.array([
-        [
-            np.cos(theta),
-            np.cos(theta - 2*np.pi/3),
-            np.cos(theta + 2*np.pi/3)
-        ],
-        [
-            -np.sin(theta),
-            -np.sin(theta - 2*np.pi/3),
-            -np.sin(theta + 2*np.pi/3)
-        ],
-        [
-            0.5,
-            0.5,
-            0.5
-        ]
+def park_matrix(theta):
+    return (2/3) * np.array([
+        [np.cos(theta), np.cos(theta - 2*np.pi/3), np.cos(theta + 2*np.pi/3)],
+        [-np.sin(theta), -np.sin(theta - 2*np.pi/3), -np.sin(theta + 2*np.pi/3)],
+        [0.5, 0.5, 0.5],
     ])
 
+
+def dq_inductances(row, theta):
+    """Transform the abc inductance matrix into the dq frame at rotor angle theta.
+    Returns incremental Ld, Lq and the dq cross-coupling Ldq (should be ~0 when
+    the frame is aligned; large values flag saturation cross-coupling)."""
+    T = park_matrix(theta)
     Labc = np.array([
         [row["Laa"], row["Lab"], row["Lac"]],
         [row["Lba"], row["Lbb"], row["Lbc"]],
-        [row["Lca"], row["Lcb"], row["Lcc"]]
+        [row["Lca"], row["Lcb"], row["Lcc"]],
     ])
-
-    Ldq0 = T @ Labc @ np.linalg.inv(T) 
-
-    Ld_matrix.append(Ldq0[0,0])
-    Lq_matrix.append(Ldq0[1,1])
-
-data["Ld_matrix"] = Ld_matrix 
-data["Lq_matrix"] = Lq_matrix 
-
-##############################################################################
-# CURRENT MAGNITUDE
-##############################################################################
-
-data["I_mag"] = (2/3) * np.sqrt(
-    
-    (
-        data["Ia"]**2 +
-        data["Ib"]**2 +
-        data["Ic"]**2
-    )
-)
-
-##############################################################################
-# TIMING ANGLE -> ID IQ
-#
-# USER ASSUMPTION:
-# TimingAdjustment=0 = Pure Q axis
-##############################################################################
-
-theta_current = np.deg2rad(
-    data["TimingAdjustment [deg]"]
-)
-
-data["Id_ref"] = (
-    -data["I_mag"] *
-    np.sin(theta_current)
-)
-
-data["Iq_ref"] = (
-    data["I_mag"] *
-    np.cos(theta_current)
-)
-
-##############################################################################
-# GROUP TO SINGLE OPERATING POINT
-##############################################################################
-
-map_data = data.groupby(
-    [
-        "J [A_per_m2]",
-        "TimingAdjustment [deg]"
-    ]
-).agg({
-
-    "Id_ref":"mean",
-    "Iq_ref":"mean",
-
-    "Psi_d":"mean",
-    "Psi_q":"mean",
-
-    "Bemf_d":"mean",
-    "Bemf_q":"mean",
-
-    "Ld_matrix":"mean",
-    "Lq_matrix":"mean"
-
-}).reset_index()
-
-##############################################################################
-# PM FLUX
-##############################################################################
-
-pm_points = map_data[
-    map_data["J [A_per_m2]"] == 0
-]
-
-psi_pm = pm_points["Psi_d"].mean()
-
-print("")
-print("Estimated PM Flux")
-print(f"{psi_pm:.6f} Wb")
-print("")
-
-##############################################################################
-# FLUX DERIVED INDUCTANCES
-##############################################################################
-
-eps = 1e-9
-
-map_data["Ld_flux"] = np.where(
-
-    np.abs(map_data["Id_ref"]) > eps,
-
-     (
-        map_data["Psi_d"] - psi_pm
-    )
-    /
-    map_data["Id_ref"],
-
-    np.nan
-)
-
-map_data["Lq_flux"] = np.where(
-
-    np.abs(map_data["Iq_ref"]) > eps,
-
-    map_data["Psi_q"]
-    /
-    map_data["Iq_ref"],
-
-    np.nan
-)
-
-##############################################################################
-# TOTAL FLUX MAGNITUDE
-##############################################################################
-
-map_data["Psi_mag"] = np.sqrt(
-    map_data["Psi_d"]**2 +
-    map_data["Psi_q"]**2
-) 
-
-##############################################################################
-# BEMF MAGNITUDE
-##############################################################################
-
-map_data["Bemf_mag"] = np.sqrt(
-    map_data["Bemf_d"]**2 +
-    map_data["Bemf_q"]**2
-)
-
-##############################################################################
-# SAVE RESULTS
-##############################################################################
-
-map_output_file = (
-    Path(__file__).resolve().parent.parent
-    / "Output_Data"
-    / "dq_motor_map.csv"
-)
-map_data.to_csv(map_output_file, index=False)
-
-print("Saved:")
-print(map_output_file)
+    Ldq0 = T @ Labc @ np.linalg.inv(T)
+    return Ldq0[0, 0], Ldq0[1, 1], Ldq0[0, 1]
 
 
-##############################################################################
-# SUBPLOT: Ld, Lq, Flux Maps
-##############################################################################
+# ============================================================================
+# LOAD
+# ============================================================================
+print("Loading CSV...")
+raw = pd.read_csv(csv_file)
 
-fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+# ---- optional transient removal (rotating-rotor case only) ----
+if rotor_mode == 'sweep':
+    n_steps = int(raw["NStepsPerElectricalCycle []"].iloc[0])
+    remove_fraction = init_period_to_remove / num_periods
+    remove_rows = int(np.floor(n_steps * remove_fraction))
+    idx = (np.arange(len(raw))
+           .reshape(-1, n_steps + 1)[:, remove_rows:]
+           .flatten())
+    data = raw.iloc[idx].copy()
+else:
+    data = raw.copy()
 
-# -------------------------
-# Ld map
-# -------------------------
-sc1 = axs[0].scatter(
-    map_data["Id_ref"],
-    map_data["Iq_ref"],
-    c=map_data["Ld_matrix"] * 1e6
-)
-axs[0].set_title("Ld Map")
-axs[0].set_xlabel("Id [A]")
-axs[0].set_ylabel("Iq [A]")
-axs[0].grid(True)
-fig.colorbar(sc1, ax=axs[0], label="Ld [µH]")
+print(f"Rows = {len(data)}")
 
-# -------------------------
-# Lq map
-# -------------------------
-sc2 = axs[1].scatter(
-    map_data["Id_ref"],
-    map_data["Iq_ref"],
-    c=map_data["Lq_matrix"] * 1e6
-)
-axs[1].set_title("Lq Map")
-axs[1].set_xlabel("Id [A]")
-axs[1].set_ylabel("Iq [A]")
-axs[1].grid(True)
-fig.colorbar(sc2, ax=axs[1], label="Lq [µH]")
+# ============================================================================
+# RAW COLUMN -> WORKING COLUMNS (no scaling yet, just unit prefixes)
+# ============================================================================
+# Inductances to Henries
+data["Laa"] = data["L(Phase_A,Phase_A) [uH]"] * 1e-6
+data["Lbb"] = data["L(Phase_B,Phase_B) [uH]"] * 1e-6
+data["Lcc"] = data["L(Phase_C,Phase_C) [uH]"] * 1e-6
+data["Lab"] = data["L(Phase_A,Phase_B) [nH]"] * 1e-9
+data["Lac"] = data["L(Phase_A,Phase_C) [nH]"] * 1e-9
+data["Lba"] = data["L(Phase_B,Phase_A) [nH]"] * 1e-9
+data["Lbc"] = data["L(Phase_C,Phase_B) [nH]"] * 1e-9   # reciprocal, name kept from original
+data["Lca"] = data["L(Phase_C,Phase_A) [nH]"] * 1e-9
+data["Lcb"] = data["L(Phase_B,Phase_C) [nH]"] * 1e-9
 
-# -------------------------
-# Flux map
-# -------------------------
-flux = map_data["Psi_mag"] * (33/2) * (np.sqrt(2) * 0.9)
+# Currents to Amps (raw, model turns)
+data["ia"] = data["InputCurrent(Phase_A) [mA]"] * 1e-3
+data["ib"] = data["InputCurrent(Phase_B) [mA]"] * 1e-3
+data["ic"] = data["InputCurrent(Phase_C) [mA]"] * 1e-3
 
-sc3 = axs[2].scatter(
-    map_data["Id_ref"],
-    map_data["Iq_ref"],
-    c=flux
-)
-axs[2].set_title("Flux Map")
-axs[2].set_xlabel("Id [A]")
-axs[2].set_ylabel("Iq [A]")
-axs[2].grid(True)
-fig.colorbar(sc3, ax=axs[2], label="Flux [Wb]")
+# Flux linkage already in Wb (raw, model turns)
+data["fa"] = data["FluxLinkage(Phase_A) [Wb]"]
+data["fb"] = data["FluxLinkage(Phase_B) [Wb]"]
+data["fc"] = data["FluxLinkage(Phase_C) [Wb]"]
 
-plt.tight_layout()
-plt.show()
+# ============================================================================
+# ROTOR ELECTRICAL ANGLE
+# ============================================================================
+if rotor_mode == 'from_flux':
+    # Read the rotor angle per step from the no-load (J=0) flux direction.
+    n_steps = int(raw["NStepsPerElectricalCycle []"].iloc[0])
+    block = n_steps + 1
+    nl = raw[raw["J [A_per_m2]"] == 0]
+    if len(nl) == 0 or len(nl) % block != 0:
+        raise ValueError(
+            f"from_flux needs whole no-load blocks. Found {len(nl)} J=0 rows, "
+            f"block size = {block}. Check NStepsPerElectricalCycle / that J=0 was swept.")
+    a0 = nl["FluxLinkage(Phase_A) [Wb]"].to_numpy()
+    b0 = nl["FluxLinkage(Phase_B) [Wb]"].to_numpy()
+    c0 = nl["FluxLinkage(Phase_C) [Wb]"].to_numpy()
+    d0, q0, _ = park_vec(a0, b0, c0, 0.0)                 # -> stationary alpha, beta
+    ang = np.unwrap(np.arctan2(q0, d0).reshape(-1, block), axis=1)
+    theta_step = np.angle(np.exp(1j * ang).mean(axis=0))  # circular mean per step
+    if len(data) % block != 0:
+        raise ValueError("Row count is not a whole number of blocks; check the export.")
+    data["theta"] = np.tile(theta_step, len(data) // block)
 
-##############################################################################
-# SUBPLOT: Ld, Lq, Flux Maps
-##############################################################################
+elif rotor_mode == 'sweep':
+    n_steps = int(raw["NStepsPerElectricalCycle []"].iloc[0])
+    remove_rows = int(np.floor(n_steps * init_period_to_remove / num_periods))
+    kept = n_steps + 1 - remove_rows
+    step_in_cycle = np.tile(np.arange(remove_rows, n_steps + 1),
+                            len(data) // kept + 1)[:len(data)]
+    data["theta"] = np.deg2rad(rotor_ref_deg) + step_in_cycle * np.deg2rad(elec_deg_per_cycle / n_steps)
 
-fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+else:  # 'fixed'
+    data["theta"] = np.full(len(data), np.deg2rad(rotor_ref_deg))
+    if auto_align:
+        nl = data[data["J [A_per_m2]"] == 0]
+        d0, q0, _ = park_vec(nl["fa"].to_numpy(), nl["fb"].to_numpy(),
+                             nl["fc"].to_numpy(), nl["theta"].to_numpy())
+        delta = np.arctan2(np.mean(q0), np.mean(d0))
+        data["theta"] = data["theta"] + delta
+        print(f"Auto-align: rotor d-axis shifted by {np.rad2deg(delta):+.3f} deg")
 
-# -------------------------
-# Ld map
-# -------------------------
-sc1 = axs[0].scatter(
-    data["Id_ref"],
-    data["Iq_ref"],
-    c= data["Ld_matrix"] * 1e6
-)
-axs[0].set_title("Ld Map")
-axs[0].set_xlabel("Id [A]")
-axs[0].set_ylabel("Iq [A]")
-axs[0].grid(True)
-fig.colorbar(sc1, ax=axs[0], label="Ld [µH]")
+# ============================================================================
+# PER-ROW dq QUANTITIES
+# ============================================================================
+id_r, iq_r, pd_r, pq_r, Ld_r, Lq_r = ([] for _ in range(6))
+for _, row in data.iterrows():
+    th = row["theta"]
+    d_i, q_i, _ = park_vec(row["ia"], row["ib"], row["ic"], th)
+    d_f, q_f, _ = park_vec(row["fa"], row["fb"], row["fc"], th)
+    Ld, Lq, _ = dq_inductances(row, th)
+    id_r.append(d_i); iq_r.append(q_i)
+    pd_r.append(d_f); pq_r.append(q_f)
+    Ld_r.append(Ld);  Lq_r.append(Lq)
 
-# -------------------------
-# Lq map
-# -------------------------
-sc2 = axs[1].scatter(
-    data["Id_ref"],
-    data["Iq_ref"],
-    c= data["Lq_matrix"] * 1e6
-)
-axs[1].set_title("Lq Map")
-axs[1].set_xlabel("Id [A]")
-axs[1].set_ylabel("Iq [A]")
-axs[1].grid(True)
-fig.colorbar(sc2, ax=axs[1], label="Lq [µH]")
+data["id_raw"]  = id_r
+data["iq_raw"]  = iq_r
+data["psi_d_raw"] = pd_r
+data["psi_q_raw"] = pq_r
+data["Ld_raw"]  = Ld_r
+data["Lq_raw"]  = Lq_r
 
-# -------------------------
-# Flux map
-# -------------------------
-flux = map_data["Psi_mag"] * (33/2) * (np.sqrt(2) * 0.9)
+# ============================================================================
+# COLLAPSE EACH OPERATING POINT (average over the stored rows)
+# ============================================================================
+m = data.groupby(["J [A_per_m2]", "TimingAdjustment [deg]"]).agg(
+    id_raw=("id_raw", "mean"),
+    iq_raw=("iq_raw", "mean"),
+    psi_d_raw=("psi_d_raw", "mean"),
+    psi_q_raw=("psi_q_raw", "mean"),
+    Ld_raw=("Ld_raw", "mean"),
+    Lq_raw=("Lq_raw", "mean"),
+).reset_index()
 
-sc3 = axs[2].scatter(
-    map_data["Id_ref"],
-    map_data["Iq_ref"],
-    c=flux
-)
-axs[2].set_title("Flux Map")
-axs[2].set_xlabel("Id [A]")
-axs[2].set_ylabel("Iq [A]")
-axs[2].grid(True)
-fig.colorbar(sc3, ax=axs[2], label="Flux [Wb]")
+# ============================================================================
+# APPLY CONSISTENT TURNS / STACK SCALING
+# ============================================================================
+N, s = turns_ratio, stack_factor
+m["Id"]    = m["id_raw"]    * (1 / N)
+m["Iq"]    = m["iq_raw"]    * (1 / N)
+m["Psi_d"] = m["psi_d_raw"] * (N * s)
+m["Psi_q"] = m["psi_q_raw"] * (N * s)
+m["Ld"]    = m["Ld_raw"]    * (N**2 * s)
+m["Lq"]    = m["Lq_raw"]    * (N**2 * s)
+m["Psi_mag"] = np.hypot(m["Psi_d"], m["Psi_q"])   # total flux linkage magnitude |psi|
 
-plt.tight_layout()
-plt.show()
+# ============================================================================
+# PM FLUX (no-load psi_d)
+# ============================================================================
+psi_pm = m.loc[m["J [A_per_m2]"] == 0, "Psi_d"].mean()
+psi_q_nl = m.loc[m["J [A_per_m2]"] == 0, "Psi_q"].abs().mean()
+print(f"\npsi_pm       = {psi_pm:.6f} Wb   (peak phase PM flux linkage)")
+print(f"no-load |psi_q| = {psi_q_nl:.2e} Wb   (should be ~0 if aligned)")
 
-##############################################################################
-# BUILD EXPORT TABLE
-##############################################################################
+# ============================================================================
+# TORQUE  (straight from the flux map; turns ratio cancels, as it physically must)
+# ============================================================================
+m["Torque_Nm"] = 1.5 * pole_pairs * (m["Psi_d"] * m["Iq"] - m["Psi_q"] * m["Id"])
 
-export_df = map_data.copy()
+# ============================================================================
+# QUICK DIAGNOSTICS
+# ============================================================================
+print("\nSaliency check (incremental):")
+print(f"  Ld mean {m.Ld.mean()*1e6:8.2f} uH   Lq mean {m.Lq.mean()*1e6:8.2f} uH")
+print(f"  Lq/Ld ratio (mean) = {m.Lq.mean()/m.Ld.mean():.3f}")
 
-# Optional: add derived flux column (same as your plot)
-export_df["Flux_Wb"] = export_df["Psi_mag"] * (33/2)**2 
+# Does Ld-Lq still depend on current angle at fixed |I|?  (it shouldn't now)
+m["Imag"] = np.hypot(m.Id, m.Iq)
+m["beta"] = np.degrees(np.arctan2(-m.Id, m.Iq))
+print("\n(Ld-Lq) in uH vs current angle beta, one |I| band:")
+band = m[(m.Imag > 40) & (m.Imag < 55)].sort_values("beta")
+print("  " + "  ".join(f"{b:3.0f}:{(l-q)*1e6:+5.1f}"
+                        for b, l, q in zip(band.beta, band.Ld, band.Lq)))
 
-# Optional: scale inductances to µH for CSV readability
-export_df["Ld_uH"] = export_df["Ld_matrix"] * 1e6
-export_df["Lq_uH"] = export_df["Lq_matrix"] * 1e6
-
-# Keep only relevant columns (clean output)
-export_df = export_df[[
-    "Id_ref",
-    "Iq_ref",
-    "Ld_uH",
-    "Lq_uH",
-    "Flux_Wb"
-]]
-
-##############################################################################
-# SAVE TO CSV
-##############################################################################
-
+# ============================================================================
+# EXPORT
+# ============================================================================
+out = m[[
+    "Id", "Iq",
+    "Psi_d", "Psi_q", "Psi_mag",
+    "Ld", "Lq",
+    "Torque_Nm",
+]].copy()
+out.insert(0, "Psi_pm", psi_pm)
+out["Ld_uH"] = out["Ld"] * 1e6
+out["Lq_uH"] = out["Lq"] * 1e6
 output_file = (
     Path(__file__).resolve().parent.parent
     / "Output_Data"
     / "PMSM_2D_FEA_Map.csv"
 )
-export_df.to_csv(output_file, index=False)
+out.to_csv(output_file, index=False)
+print(f"\nSaved: {output_file}")
 
-print(f"Saved: \n PMSM_2D_FEA_Map.csv")
+# ============================================================================
+# PLOTS
+# ============================================================================
+fig, ax = plt.subplots(2, 2, figsize=(13, 10))
+panels = [("Ld_uH", "Ld [uH]"), ("Lq_uH", "Lq [uH]"),
+          ("Psi_mag", "|psi| [Wb]"), ("Torque_Nm", "Torque [Nm]")]
+for a, (col, lab) in zip(ax.flat, panels):
+    sc = a.scatter(out["Id"], out["Iq"], c=out[col])
+    a.set_title(lab); a.set_xlabel("Id [A]"); a.set_ylabel("Iq [A]"); a.grid(True)
+    fig.colorbar(sc, ax=a, label=lab)
+plt.tight_layout()
+figure_file = (
+    Path(__file__).resolve().parent.parent
+    / "Output_Data"
+    / "Motor_Characteristic_Plots.png"
+)
+fig.savefig(figure_file, dpi=300, bbox_inches="tight")
+print(f"Saved: {figure_file}")
+plt.show()
