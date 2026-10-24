@@ -97,6 +97,34 @@ def kfold_cv(make_model, table, pole_pairs, k=5, repeats=3, seed=0):
     return {key: float(np.mean([r[key] for r in results])) for key in results[0]}
 
 
+def seed_sensitivity(make_model, cobalt, p_cob, zenodo, p_zen, seeds=range(10),
+                     k=5, repeats=3, n_rings=2):
+    """Repeat the main tests of a stochastic model at several random seeds.
+
+    A neural network starts training from random weights, so its accuracy
+    depends on the seed as well as on its size. `make_model(seed)` must return
+    an unfitted model. Each row of the result is one seed: Cobalt
+    cross-validation, Cobalt held-out rings, and Zenodo flux and torque errors
+    inside and outside the training region. A deterministic model (constant
+    inductance, lookup table, polynomial) gives the same numbers for every
+    seed, so only the network needs this check.
+    """
+    rows = []
+    for s in seeds:
+        make = lambda s=s: make_model(s)                     # bind this seed
+        cv = kfold_cv(make, cobalt, p_cob, k, repeats)
+        rings = held_out_rings(make, cobalt, p_cob, n_rings)
+        z = zenodo_validation({"model": make}, zenodo, p_zen).iloc[0]
+        rows.append({"seed": s,
+                     "cobalt_cv_flux_rmse_pct": cv["flux_rmse_pct"],
+                     "cobalt_cv_torque_rmse_pct": cv["torque_rmse_pct"],
+                     "cobalt_rings_flux_rmse_pct": rings["flux_rmse_pct"],
+                     "zenodo_inside_flux_rmse_pct": z["inside_flux_rmse_pct"],
+                     "zenodo_inside_torque_rmse_pct": z["inside_torque_rmse_pct"],
+                     "zenodo_outside_flux_rmse_pct": z["outside_flux_rmse_pct"]})
+    return pd.DataFrame(rows)
+
+
 def select_settings(table, pole_pairs, degrees=(2, 3, 4, 5, 6), sizes=(8, 16, 32),
                     k=5, repeats=3, seed=0):
     """Choose polynomial degree and network size by k-fold cross-validation.

@@ -1,4 +1,4 @@
-﻿============================= test session starts =============================
+============================= test session starts =============================
 platform win32 -- Python 3.14.6, pytest-9.1.1, pluggy-1.7.0 -- C:\Users\danma\AppData\Local\Python\pythoncore-3.14-64\python.exe
 cachedir: .pytest_cache
 rootdir: C:\Users\danma\Documents\school\Monash\Third_Year\Sem_2\NMML\Project\MMA3001-Project
@@ -29,4 +29,4 @@ Scripts/Tests/test_zenodo_input_data.py::test_inductance_matrix_round_trip PASSE
 Scripts/Tests/test_zenodo_input_data.py::test_inductance_derivation_known_motor PASSED [ 95%]
 Scripts/Tests/test_zenodo_input_data.py::test_real_conversion_self_checks PASSED [100%]
 
-============================= 22 passed in 14.31s =============================
+============================= 22 passed in 11.98s =============================

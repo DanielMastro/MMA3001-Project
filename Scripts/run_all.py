@@ -20,7 +20,9 @@ Steps
      (lowest cross-validated flux error).
   5. Fit the final model to all Cobalt points and write the output maps for
      the inverter team: flux, inductances and torque (derive.py).
-  6. Validate the frozen script on the independent Zenodo motor.
+  6. Validate the frozen script on the independent Zenodo motor, then repeat
+     the network's tests at NN_SEEDS random seeds (its result depends on the
+     random starting weights; the other models are deterministic).
   7. Formula checks: flux torque vs 07-07's matrix torque, and whether the
      matrix inductances reproduce the FEA flux.
   8. Performance: 07-07 loop vs vectorised, profiling, and the cost of each model.
@@ -71,6 +73,7 @@ POLY_DEGREES = (2, 3, 4, 5, 6)     # polynomial degrees tried by cross-validatio
 NN_SIZES = (8, 16, 32)             # neurons per hidden layer tried by cross-validation
 CV_FOLDS, CV_REPEATS = 5, 3        # 5-fold cross-validation, repeated with 3 shuffles
 HELD_OUT_RINGS = 2                 # outer current rings held out for extrapolation
+NN_SEEDS = range(10)               # random seeds for the network's seed-sensitivity check
 OUTPUT_GRID_STEP = {"dI": 1.0, "dbeta": 1.0}   # output map: 1 A x 1 deg
 TIME_ZENODO_LOOP = True            # time 07-07's row loop on Zenodo's 140,000 rows (about 10-60 s)
 
@@ -155,6 +158,17 @@ def main():
     validation = ev.zenodo_validation(factories, zenodo, p_zen)
     print(validation.round(3).to_string(index=False))
     save(validation, VALIDATION / "zenodo_validation.csv")
+
+    # The network starts from random weights: repeat its tests at several seeds
+    # to see how much of its accuracy is the network and how much is the seed
+    print(f"\n  Network seed sensitivity, neural_network({size}), seeds "
+          f"{min(NN_SEEDS)}-{max(NN_SEEDS)}:")
+    seeds = ev.seed_sensitivity(lambda s: md.neural_network(size, seed=s),
+                                cobalt, p_cob, zenodo, p_zen, NN_SEEDS,
+                                CV_FOLDS, CV_REPEATS, HELD_OUT_RINGS)
+    print(seeds.round(3).to_string(index=False))
+    print(seeds.drop(columns="seed").agg(["min", "mean", "max"]).round(3).to_string())
+    save(seeds, VALIDATION / "nn_seed_sensitivity.csv")
 
     # ------------------------------------------------------------------
     heading("7. Formula checks")
