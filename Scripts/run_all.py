@@ -24,12 +24,15 @@ Steps
   7. Formula checks: flux torque vs 07-07's matrix torque, and whether the
      matrix inductances reproduce the FEA flux.
   8. Performance: 07-07 loop vs vectorised, profiling, and the cost of each model.
+  9. Run the pytest tests and save the report (run_tests.py).
 
 Output_Data/
   Cobalt/       cobalt_flux_map.csv/.png, cobalt_output_map.csv,
                 cobalt_output_at_fea_points.csv, cobalt_07-07_format.csv
   Zenodo_IPM/   zenodo_ipm_flux_map.csv/.png
   Validation/   every comparison, validation and performance table
+Docs/
+  test_report.txt   output of the pytest run in step 9
 """
 
 from __future__ import annotations
@@ -44,6 +47,7 @@ import evaluate as ev
 import models as md
 import preprocess as pp
 from create_zenodo_input_data import create_zenodo_input_data
+from run_tests import write_test_report
 
 # ============================================================================
 # SETTINGS
@@ -183,6 +187,13 @@ def main():
     costs = ev.model_costs(factories, cobalt)
     print(costs.round(3).to_string(index=False))
     save(costs, VALIDATION / "performance_model_costs.csv")
+
+    # ------------------------------------------------------------------
+    heading("9. Tests")
+    # Same as typing `python -m pytest -v`, but the output is also saved to
+    # Docs/test_report.txt so the report always matches this run of the code
+    if write_test_report() != 0:
+        print("  WARNING: at least one test failed - see Docs/test_report.txt")
 
     heading(f"Done in {time.perf_counter() - t_start:.0f} s")
 
