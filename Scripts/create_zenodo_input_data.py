@@ -77,6 +77,8 @@ or from Python:  create_zenodo_input_data(psi_d_path, psi_q_path, torque_path, o
 
 from __future__ import annotations
 
+__docformat__ = "numpy"   # docstring style, read by pdoc
+
 import argparse
 import json
 import re
@@ -126,7 +128,29 @@ _TIME_UNITS = {"s": 1.0, "ms": 1e-3, "us": 1e-6}
 # winding-table analysis script)
 # ---------------------------------------------------------------------------
 def park(a, b, c, theta):
-    """abc -> dq (amplitude-invariant). Same as park_vec() in the analysis script."""
+    """Park-transform a three-phase quantity (abc -> dq), amplitude-invariant.
+
+    The same transform as preprocess.park_vec(), without the zero-sequence
+    term.
+
+    Parameters
+    ----------
+    a : array_like
+        Phase A values.
+    b : array_like
+        Phase B values.
+    c : array_like
+        Phase C values.
+    theta : array_like
+        Rotor electrical angle [rad].
+
+    Returns
+    -------
+    d : numpy.ndarray
+        d-axis component.
+    q : numpy.ndarray
+        q-axis component.
+    """
     d = (2 / 3) * (a * np.cos(theta) + b * np.cos(theta - 2 * np.pi / 3)
                    + c * np.cos(theta + 2 * np.pi / 3))
     q = -(2 / 3) * (a * np.sin(theta) + b * np.sin(theta - 2 * np.pi / 3)
@@ -135,7 +159,28 @@ def park(a, b, c, theta):
 
 
 def inverse_park(d, q, theta):
-    """dq -> abc (amplitude-invariant, zero-sequence = 0). Exact inverse of park()."""
+    """Inverse Park transform (dq -> abc), amplitude-invariant.
+
+    The zero-sequence component is taken as 0. The exact inverse of park().
+
+    Parameters
+    ----------
+    d : array_like
+        d-axis component.
+    q : array_like
+        q-axis component.
+    theta : array_like
+        Rotor electrical angle [rad].
+
+    Returns
+    -------
+    a : numpy.ndarray
+        Phase A values.
+    b : numpy.ndarray
+        Phase B values.
+    c : numpy.ndarray
+        Phase C values.
+    """
     a = d * np.cos(theta) - q * np.sin(theta)
     b = d * np.cos(theta - 2 * np.pi / 3) - q * np.sin(theta - 2 * np.pi / 3)
     c = d * np.cos(theta + 2 * np.pi / 3) - q * np.sin(theta + 2 * np.pi / 3)
@@ -143,29 +188,50 @@ def inverse_park(d, q, theta):
 
 
 def incremental_inductance_dq(im_vals, gamma_deg, psi_d, psi_q):
-    """Incremental dq inductances from flux maps on a full polar current grid.
+    """Compute incremental dq inductances from flux maps on a polar current grid.
 
     Parameters
     ----------
-    im_vals : (n_im,) current magnitudes, ascending, must start at 0
-    gamma_deg : (n_g,) current angles, uniformly spaced, covering a full circle
-        WITHOUT the duplicate endpoint (e.g. -180..170 in 10 deg steps)
-    psi_d, psi_q : (n_t, n_im, n_g) flux linkage at each rotor sample
+    im_vals : numpy.ndarray
+        Current magnitudes [A], shape (n_im,), ascending and starting at 0.
+    gamma_deg : numpy.ndarray
+        Current angles [deg], shape (n_g,), uniformly spaced over a full
+        circle WITHOUT the duplicate endpoint (e.g. -180..170 in 10 deg steps).
+    psi_d : numpy.ndarray
+        d-axis flux linkage [Wb], shape (n_t, n_im, n_g): one map per rotor
+        sample.
+    psi_q : numpy.ndarray
+        q-axis flux linkage [Wb], the same shape.
 
     Returns
     -------
-    Ldd, Ldq, Lqd, Lqq : (n_t, n_im, n_g) arrays, H
-        Ldd = dpsi_d/dId, Ldq = dpsi_d/dIq, Lqd = dpsi_q/dId, Lqq = dpsi_q/dIq
+    Ldd : numpy.ndarray
+        dpsi_d/dId [H], shape (n_t, n_im, n_g).
+    Ldq : numpy.ndarray
+        dpsi_d/dIq [H], the same shape.
+    Lqd : numpy.ndarray
+        dpsi_q/dId [H], the same shape.
+    Lqq : numpy.ndarray
+        dpsi_q/dIq [H], the same shape.
 
-    Method
+    Raises
     ------
+    ValueError
+        If im_vals does not start at 0, or gamma_deg is not uniformly spaced
+        over a full circle.
+
+    Notes
+    -----
     Derivatives along the grid axes (np.gradient in Im, 2nd order; periodic
-    4th-order central differences in Gamma) are converted to d/dId, d/dIq with the exact Jacobian
-    of Id = -Im sin(g), Iq = Im cos(g):
+    4th-order central differences in Gamma) are converted to d/dId and d/dIq
+    with the exact Jacobian of Id = -Im sin(g), Iq = Im cos(g):
+
         d/dId = -sin(g) d/dIm - cos(g)/Im d/dg
         d/dIq =  cos(g) d/dIm - sin(g)/Im d/dg
-    At Im = 0 the polar Jacobian is singular, so Cartesian central differences
-    across the first ring are used (+-Id at g = -/+90 deg, +-Iq at g = 0/180).
+
+    At Im = 0 the polar Jacobian is singular, so Cartesian central
+    differences across the first ring are used (+-Id at g = -/+90 deg, +-Iq
+    at g = 0/180).
     """
     if im_vals[0] != 0:
         raise ValueError("Inductance derivation needs an Im = 0 point")
@@ -200,12 +266,32 @@ def incremental_inductance_dq(im_vals, gamma_deg, psi_d, psi_q):
 
 
 def dq_to_abc_inductance(Ldd, Lqq, Lc, theta):
-    """3x3 phase inductance matrix from a symmetric dq matrix [[Ldd, Lc], [Lc, Lqq]]
-    with zero-sequence inductance 0 (amplitude-invariant transform):
-        L_xy = 2/3 * (Ldd cos(tx) cos(ty) + Lqq sin(tx) sin(ty) - Lc sin(tx + ty))
-    with tx = theta, theta - 2pi/3, theta + 2pi/3 for phases A, B, C.
-    Park-transforming this matrix (T @ L @ inv(T)) returns Ldd, Lqq and Lc exactly.
-    Returns a dict keyed by phase pairs, e.g. ('A', 'B').
+    """Build the 3x3 phase inductance matrix from a symmetric dq matrix.
+
+    The dq matrix is [[Ldd, Lc], [Lc, Lqq]] with zero-sequence inductance 0
+    (amplitude-invariant transform). Park-transforming the result
+    (T @ L @ inv(T)) returns Ldd, Lqq and Lc exactly.
+
+    Parameters
+    ----------
+    Ldd : numpy.ndarray
+        d-axis incremental inductance [H].
+    Lqq : numpy.ndarray
+        q-axis incremental inductance [H].
+    Lc : numpy.ndarray
+        Symmetrised cross-coupling inductance [H].
+    theta : numpy.ndarray
+        Rotor electrical angle [rad], broadcastable with the inductances.
+
+    Returns
+    -------
+    L_abc : dict of numpy.ndarray
+        Phase inductances [H] keyed by phase pair, e.g. ("A", "B").
+
+    Notes
+    -----
+    L_xy = 2/3 * (Ldd cos(tx) cos(ty) + Lqq sin(tx) sin(ty) - Lc sin(tx + ty)),
+    with tx = theta, theta - 2pi/3 and theta + 2pi/3 for phases A, B and C.
     """
     tx = {"A": theta, "B": theta - 2 * np.pi / 3, "C": theta + 2 * np.pi / 3}
     out = {}
@@ -221,14 +307,32 @@ def dq_to_abc_inductance(Ldd, Lqq, Lc, theta):
 # Reading and validating the Zenodo files
 # ---------------------------------------------------------------------------
 def read_zenodo_map(path: Path):
-    """Read one Zenodo map CSV.
+    """Read one Zenodo map CSV (Psi_d, Psi_q or Torque).
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        The CSV: a time column, then one column per operating point named
+        `... Gamma='<deg>' im='<A>A'`.
 
     Returns
     -------
-    time : (n_t,) array in the file's time unit
-    time_unit : str, unit parsed from the time column header (e.g. 'ms')
-    gamma_deg, im_a : (n_op,) arrays parsed from the column headers
-    values : (n_t, n_op) array
+    time : numpy.ndarray
+        Sample times, shape (n_t,), in the file's time unit.
+    time_unit : str
+        Unit parsed from the time column header, e.g. "ms".
+    gamma_deg : numpy.ndarray
+        Current angle of each operating point [deg], shape (n_op,).
+    im_a : numpy.ndarray
+        Peak current magnitude of each operating point [A], shape (n_op,).
+    values : numpy.ndarray
+        The map values, shape (n_t, n_op).
+
+    Raises
+    ------
+    ValueError
+        If the first column is not time, a column header cannot be parsed,
+        or the values contain NaN.
     """
     df = pd.read_csv(path)
     tcol = df.columns[0]
@@ -252,7 +356,30 @@ def read_zenodo_map(path: Path):
 
 
 def load_zenodo(psi_d_path: Path, psi_q_path: Path, torque_path: Path | None):
-    """Load and cross-check the Zenodo CSVs. Returns a dict of arrays."""
+    """Load the Zenodo CSVs and check that they belong together.
+
+    Parameters
+    ----------
+    psi_d_path : pathlib.Path
+        Psi_d.csv.
+    psi_q_path : pathlib.Path
+        Psi_q.csv.
+    torque_path : pathlib.Path or None
+        Torque.csv, or None to skip the torque.
+
+    Returns
+    -------
+    z : dict
+        "time", "time_unit", "gamma", "im", "psi_d", "psi_q" and "torque"
+        (None without a torque file), as read by read_zenodo_map().
+
+    Raises
+    ------
+    ValueError
+        If the files do not share the same time base and operating points,
+        the time samples are not uniformly spaced, or there is no Im = 0
+        (no-load) point.
+    """
     t, unit, g, im, psi_d = read_zenodo_map(psi_d_path)
     t2, _, g2, im2, psi_q = read_zenodo_map(psi_q_path)
     if not (np.allclose(t, t2) and np.array_equal(g, g2) and np.array_equal(im, im2)):
@@ -276,11 +403,35 @@ def load_zenodo(psi_d_path: Path, psi_q_path: Path, torque_path: Path | None):
 # Conversion
 # ---------------------------------------------------------------------------
 def _inductance_columns(im, g, psi_d, psi_q, theta):
-    """Fill the 9 L(...) columns with the derived incremental inductance matrix.
+    """Fill the nine L(...) columns with the derived incremental inductance matrix.
 
-    im, g : (n_op,) operating points sorted Im outer, Gamma inner (full grid)
-    psi_d, psi_q : (n_t, n_op);  theta : (n_t, 1)
-    Returns (dict column -> (n_t, n_op) array in the column's unit, stats dict)
+    Parameters
+    ----------
+    im : numpy.ndarray
+        Current magnitude of each operating point [A], shape (n_op,), sorted
+        Im outer and Gamma inner over a complete grid.
+    g : numpy.ndarray
+        Current angle of each operating point [deg], shape (n_op,).
+    psi_d : numpy.ndarray
+        d-axis flux linkage [Wb], shape (n_t, n_op).
+    psi_q : numpy.ndarray
+        q-axis flux linkage [Wb], shape (n_t, n_op).
+    theta : numpy.ndarray
+        Rotor electrical angle [rad], shape (n_t, 1).
+
+    Returns
+    -------
+    cols : dict of numpy.ndarray
+        Column name -> (n_t, n_op) values in that column's unit (uH or nH).
+    stats : dict of float
+        Inductance ranges and the reciprocity error |Ldq - Lqd|.
+    dq : tuple of numpy.ndarray
+        (Ldd, Lqq, Lc) [H], each of shape (n_t, n_op).
+
+    Raises
+    ------
+    ValueError
+        If the operating points do not form a complete Im x Gamma grid.
     """
     im_vals, g_vals = np.unique(im), np.unique(g)
     if len(im_vals) * len(g_vals) != len(im):
@@ -319,12 +470,43 @@ def _inductance_columns(im, g, psi_d, psi_q, theta):
 
 def build_winding_table(z: dict, pole_pairs: int, conductor_area_m2: float,
                         time_unit: str | None = None, inductance: str = "incremental"):
-    """Build a DataFrame with the Maxwell winding-table columns.
+    """Build the Maxwell winding-table columns from the Zenodo maps.
 
-    Each operating point becomes one block of n_t rows (one electrical rotation),
-    ordered J (current) outer and TimingAdjustment (angle) inner, as in the
-    Maxwell export. inductance = 'incremental' fills the L(...) columns with the
-    derived incremental matrix; 'none' leaves them empty.
+    Each operating point becomes one block of n_t rows (one electrical
+    rotation), ordered J (current) outer and TimingAdjustment (angle) inner,
+    as in the Maxwell export.
+
+    Parameters
+    ----------
+    z : dict
+        Output of load_zenodo().
+    pole_pairs : int
+        Number of pole pairs (8 for the Zenodo motor).
+    conductor_area_m2 : float
+        Conductor area for the J proxy, J = Im / area [m^2].
+    time_unit : str, optional
+        Override the time unit in the file header ("s", "ms" or "us").
+        Default None (use the header).
+    inductance : {"incremental", "none"}, optional
+        "incremental" (default) fills the L(...) columns with the derived
+        incremental matrix; "none" leaves them empty (NaN).
+
+    Returns
+    -------
+    table : pandas.DataFrame
+        The winding table, with the columns in WINDING_TABLE_COLUMNS order.
+    summary : pandas.DataFrame
+        One row per operating point: J, TimingAdjustment, Im, Gamma, Id, Iq,
+        the cycle-mean psi_d and psi_q, and when available the FEA torque,
+        its ripple and the dq inductances.
+    info : dict
+        rpm, period_s, n_t, n_op, time_unit, inductance and
+        inductance_stats.
+
+    Raises
+    ------
+    ValueError
+        If the time unit or the inductance option is unknown.
     """
     unit = time_unit or z["time_unit"]
     if unit not in _TIME_UNITS:
@@ -417,8 +599,31 @@ def build_winding_table(z: dict, pole_pairs: int, conductor_area_m2: float,
 
 
 def self_check(table: pd.DataFrame, summary: pd.DataFrame, n_t: int, pole_pairs: int):
-    """Round-trip check: Park-transform the written abc columns back to dq and
-    compare with the source values. Returns a dict of max errors."""
+    """Check the conversion by transforming the written columns back to dq.
+
+    Park-transforms the abc flux, current and (if present) inductance
+    columns and compares them with the source values. Also compares the
+    flux-formula torque with the FEA torque.
+
+    Parameters
+    ----------
+    table : pandas.DataFrame
+        The winding table from build_winding_table().
+    summary : pandas.DataFrame
+        The operating-point summary from build_winding_table().
+    n_t : int
+        Samples per block.
+    pole_pairs : int
+        Number of pole pairs.
+
+    Returns
+    -------
+    checks : dict of float
+        The largest errors: max_err_psi_d_Wb, max_err_psi_q_Wb, max_err_id_A
+        and max_err_iq_A; when available, max_err_Ld_from_matrix_uH,
+        max_err_Lq_from_matrix_uH, torque_flux_vs_FEA_rms_Nm and
+        torque_FEA_max_Nm.
+    """
     th = np.tile(2 * np.pi * np.arange(n_t) / (n_t - 1), len(summary))
     d_f, q_f = park(table["FluxLinkage(Phase_A) [Wb]"].to_numpy(),
                     table["FluxLinkage(Phase_B) [Wb]"].to_numpy(),
@@ -461,7 +666,24 @@ def self_check(table: pd.DataFrame, summary: pd.DataFrame, n_t: int, pole_pairs:
 
 
 def provenance(params, info, checks):
-    """Per-column provenance record written next to the output CSV."""
+    """Build the per-column provenance record written next to the output CSV.
+
+    Parameters
+    ----------
+    params : dict
+        "pole_pairs" and "conductor_area".
+    info : dict
+        The info dict from build_winding_table().
+    checks : dict
+        The results of self_check().
+
+    Returns
+    -------
+    record : dict
+        A JSON-ready record: the source and citation, the parameters, the
+        analysis settings for this file, how each column was made, the
+        inductance statistics, the self-check results and notes.
+    """
     return {
         "source": "Zenodo record 7866449 (CC BY 4.0), https://doi.org/10.5281/zenodo.7866449",
         "cite": "Machines 2023, 11(8), 784, https://doi.org/10.3390/machines11080784",
@@ -513,12 +735,43 @@ def create_zenodo_input_data(psi_d_path, psi_q_path, torque_path, out_path,
                              time_unit=None, inductance="incremental", verbose=True):
     """Convert the Zenodo CSVs and write the three output files.
 
-    psi_d_path, psi_q_path : Zenodo Psi_d.csv and Psi_q.csv
-    torque_path            : Zenodo Torque.csv, or None to skip the FEA torque
-    out_path               : the winding table to write (zenodo_input_data.csv).
-                             The operating-point summary and provenance file are
-                             written beside it.
-    Returns a dict of the self-check results.
+    Writes the winding table to out_path and two files beside it, named
+    after it: `..._operating_points.csv` (the FEA torque per operating point)
+    and `..._provenance.json` (how every column was made).
+
+    Parameters
+    ----------
+    psi_d_path : str or pathlib.Path
+        Zenodo Psi_d.csv.
+    psi_q_path : str or pathlib.Path
+        Zenodo Psi_q.csv.
+    torque_path : str or pathlib.Path or None
+        Zenodo Torque.csv, or None to skip the FEA torque. A path that does
+        not exist is skipped with a note.
+    out_path : str or pathlib.Path
+        The winding table to write (zenodo_input_data.csv).
+    pole_pairs : int, optional
+        Number of pole pairs. Default 8 (24 slots, 16 poles).
+    conductor_area : float, optional
+        Conductor area for the J proxy [m^2]. Default 1, which makes J equal
+        to Im in amps.
+    time_unit : str, optional
+        Override the time unit in the file header ("s", "ms" or "us").
+    inductance : {"incremental", "none"}, optional
+        Fill the L(...) columns with the derived matrix (default) or leave
+        them empty.
+    verbose : bool, optional
+        Print what was written and the checks. Default True.
+
+    Returns
+    -------
+    checks : dict of float
+        The self_check() results.
+
+    Raises
+    ------
+    FileNotFoundError
+        If Psi_d.csv or Psi_q.csv is missing.
     """
     psi_d_path, psi_q_path, out_path = Path(psi_d_path), Path(psi_q_path), Path(out_path)
     missing = [f for f in (psi_d_path, psi_q_path) if not f.exists()]
@@ -566,11 +819,18 @@ def create_zenodo_input_data(psi_d_path, psi_q_path, torque_path, out_path,
 
 
 def _default_locations():
-    """Where to look for the Zenodo CSVs when no paths are given.
+    """Find the folder holding the Zenodo CSVs when no paths are given.
 
-    1. Repo layout: <repo>/Scripts/create_zenodo_input_data.py with the CSVs in
-       <repo>/Input_Data/Zenodo_IPM/. Output goes to the same Zenodo_IPM folder.
-    2. Otherwise, the CSVs in the same folder as this script, with output beside them.
+    1. The repository layout: Scripts/create_zenodo_input_data.py with the
+       CSVs in Input_Data/Zenodo_IPM/. Output goes there too.
+    2. Otherwise, the CSVs beside this script, with output beside them.
+
+    Returns
+    -------
+    folder : pathlib.Path
+        The folder to read from and write to. If neither has the CSVs, the
+        repository location is returned and the missing files are reported
+        when the converter runs.
     """
     here = Path(__file__).resolve().parent
     repo_src = here.parent / "Input_Data" / "Zenodo_IPM"
@@ -582,7 +842,21 @@ def _default_locations():
 
 
 def main(argv=None):
-    """Command-line entry point (see Usage in the module docstring)."""
+    """Run the converter from the command line.
+
+    See Usage in the module docstring for the options.
+
+    Parameters
+    ----------
+    argv : list of str, optional
+        Command-line arguments. Default None (use sys.argv).
+
+    Raises
+    ------
+    SystemExit
+        If the input files are missing, with a message saying where to put
+        them.
+    """
     src = _default_locations()
     p = argparse.ArgumentParser(description="Turn the Zenodo IPM dq maps into zenodo_input_data.csv")
     p.add_argument("--psi-d", type=Path, default=src / "Psi_d.csv")

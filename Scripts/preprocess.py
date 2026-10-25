@@ -14,8 +14,10 @@ Id, Iq, psi_d, psi_q, the inductances and torque. The two inputs are:
 
 models.py then fits flux models to this table, and evaluate.py checks them.
 
-The steps (same methods and results as preprocess_v3)
----------------------------------------------
+Pipeline steps
+--------------
+The same methods and results as History/preprocess_v3.py:
+
   1. load_winding_table()  read the CSV and check it is usable
   2. rotor_angle()         rotor electrical angle at every step, read from the
                            direction of the no-load (J = 0) flux
@@ -26,10 +28,11 @@ The steps (same methods and results as preprocess_v3)
   5. scale()               2-turn 2D model -> real machine (turns ratio, stack factor)
   6. pm_flux()             psi_pm and the cross-saturated psi_pm_eff(Iq)
   7. grid_inductances()    incremental inductances by finite differences on the
-                           FEA grid, and apparent inductances, as in preprocess_v3
-  build_flux_map() runs all seven and adds torque.
+                           FEA grid, and apparent inductances, as in the original
 
-What changed from preprocess_v3, and why
+build_flux_map() runs all seven and adds torque.
+
+Changes from the original script
 --------------------------------
   * The code is split into functions, and the settings (file, turns ratio,
     stack factor, pole pairs) are arguments rather than constants at the top.
@@ -37,21 +40,23 @@ What changed from preprocess_v3, and why
     documented with pdoc. Cobalt: turns_ratio=33/2, stack_factor=0.9,
     pole_pairs=5. Zenodo: 1, 1, 8.
   * The Park transform of the inductance matrix is done for all rows at once
-    (vectorised). preprocess_v3's row-by-row iterrows loop is kept, selectable with
-    inductance_method="loop", so evaluate.py can time the two against each
-    other. Both give the same numbers.
+    (vectorised). The original row-by-row iterrows loop is kept, selectable
+    with inductance_method="loop", so evaluate.py can time the two against
+    each other. Both give the same numbers.
   * Steps per electrical cycle use the MEAN rotor-angle step instead of the
     median. Cobalt still gets 16 steps. Zenodo's 60 small steps carry slot
     ripple, which can push the median far enough to round to 59.
   * The incremental-inductance table is assembled without DataFrame.stack(),
     and merged with how="left". The results are the same, but the J = 0 rows
     are kept on every pandas version.
-  * Torque now uses the flux formula (derive.torque_from_flux). preprocess_v3's
+  * Torque now uses the flux formula (derive.torque_from_flux). The original
     matrix-inductance formula is kept as the column Torque_matrix_Nm for
     comparison only (evaluate.torque_formula_comparison).
 """
 
 from __future__ import annotations
+
+__docformat__ = "numpy"   # docstring style, read by pdoc
 
 from pathlib import Path
 
@@ -83,9 +88,31 @@ INDUCTANCE_COLUMNS = [c for c in REQUIRED_COLUMNS if c.startswith("L(")]
 # PARK / CLARKE (amplitude-invariant, 2/3 convention) - unchanged from preprocess_v3
 # ============================================================================
 def park_vec(a, b, c, theta):
-    """abc -> dq0 for a vector quantity (current, flux, voltage) at rotor
-    electrical angle theta [rad]. Amplitude-invariant: a balanced set of peak
-    amplitude X gives |dq| = X."""
+    """Park-transform a three-phase quantity (abc -> dq0).
+
+    Amplitude-invariant (2/3) convention: a balanced set of peak amplitude X
+    gives |dq| = X. Used for currents, flux linkages and voltages.
+
+    Parameters
+    ----------
+    a : float or array_like
+        Phase A value.
+    b : float or array_like
+        Phase B value.
+    c : float or array_like
+        Phase C value.
+    theta : float or array_like
+        Rotor electrical angle [rad].
+
+    Returns
+    -------
+    d : numpy.ndarray or float
+        d-axis component.
+    q : numpy.ndarray or float
+        q-axis component.
+    z : numpy.ndarray or float
+        Zero-sequence component, (a + b + c) / 3.
+    """
     d = (2/3) * (a*np.cos(theta) + b*np.cos(theta - 2*np.pi/3) + c*np.cos(theta + 2*np.pi/3))
     q = -(2/3) * (a*np.sin(theta) + b*np.sin(theta - 2*np.pi/3) + c*np.sin(theta + 2*np.pi/3))
     z = (1/3) * (a + b + c)
@@ -93,7 +120,18 @@ def park_vec(a, b, c, theta):
 
 
 def park_matrix(theta):
-    """The 3x3 Park matrix T(theta), so that [d, q, 0] = T @ [a, b, c]."""
+    """Build the 3x3 Park matrix T(theta), so that [d, q, 0] = T @ [a, b, c].
+
+    Parameters
+    ----------
+    theta : float
+        Rotor electrical angle [rad].
+
+    Returns
+    -------
+    T : numpy.ndarray
+        Amplitude-invariant Park matrix, shape (3, 3).
+    """
     return (2/3) * np.array([
         [np.cos(theta), np.cos(theta - 2*np.pi/3), np.cos(theta + 2*np.pi/3)],
         [-np.sin(theta), -np.sin(theta - 2*np.pi/3), -np.sin(theta + 2*np.pi/3)],
@@ -102,9 +140,26 @@ def park_matrix(theta):
 
 
 def dq_inductances_matrix(row, theta):
-    """dq transform of the FEA's abc inductance matrix for ONE row:
-    L_dq0 = T @ L_abc @ inv(T). Returns (Ld, Lq). This is preprocess_v3's per-row
-    version, used by inductance_method="loop"."""
+    """Park-transform one row's 3x3 phase inductance matrix.
+
+    Computes L_dq0 = T @ L_abc @ inv(T) for ONE row. This is the original
+    script's per-row version, used by dq_per_row(inductance_method="loop")
+    and kept so the vectorised version can be timed against it.
+
+    Parameters
+    ----------
+    row : pandas.Series
+        One row with the working columns Laa, Lab, ... Lcc [H].
+    theta : float
+        Rotor electrical angle [rad].
+
+    Returns
+    -------
+    Ld : float
+        d-axis inductance [H].
+    Lq : float
+        q-axis inductance [H].
+    """
     T = park_matrix(theta)
     L = np.array([
         [row["Laa"], row["Lab"], row["Lac"]],
@@ -116,7 +171,18 @@ def dq_inductances_matrix(row, theta):
 
 
 def park_matrix_stack(theta):
-    """park_matrix() for many angles at once: returns an (n, 3, 3) array."""
+    """Build the Park matrices for many angles at once.
+
+    Parameters
+    ----------
+    theta : array_like
+        Rotor electrical angles [rad], n values.
+
+    Returns
+    -------
+    T : numpy.ndarray
+        Shape (n, 3, 3); T[k] equals park_matrix(theta[k]).
+    """
     theta = np.asarray(theta, dtype=float)
     T = np.empty((theta.size, 3, 3))
     T[:, 0, 0] = np.cos(theta)
@@ -135,17 +201,30 @@ def park_matrix_stack(theta):
 def load_winding_table(path):
     """Read a winding-table CSV and check it can be processed.
 
-    Raises a clear error if:
-      * the file is missing, or a required column is missing
-      * any current, flux or setting column contains NaN
-      * the row count is not a whole number of operating-point blocks
-        (each block = NStepsPerElectricalCycle + 1 rows)
-      * there are no no-load (J = 0) rows, which the rotor angle is read from
-      * the phase currents do not sum to zero (an unbalanced or mislabelled set)
+    NaN in the inductance-matrix columns only prints a warning: those
+    columns are optional, and their dq values will be NaN.
 
-    NaN in the inductance-matrix columns only gives a warning: those columns
-    are optional, and their dq values will be NaN.
-    Returns the raw DataFrame, units unchanged.
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Winding-table CSV in the Ansys Maxwell export format, with the
+        columns in REQUIRED_COLUMNS.
+
+    Returns
+    -------
+    raw : pandas.DataFrame
+        The file as read, units unchanged.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    ValueError
+        If a required column is missing; a current, flux or setting column
+        contains NaN; the row count is not a whole number of operating-point
+        blocks (NStepsPerElectricalCycle + 1 rows each); there are no
+        no-load (J = 0) rows, which the rotor angle is read from; or the
+        phase currents do not sum to zero (an unbalanced or mislabelled set).
     """
     path = Path(path)
     if not path.exists():
@@ -182,8 +261,22 @@ def load_winding_table(path):
 
 
 def working_columns(data):
-    """RAW COLUMNS -> WORKING COLUMNS (unit prefixes only), as in preprocess_v3.
-    Inductances uH/nH -> H, currents mA -> A, flux already in Wb."""
+    """Add the working columns, converting unit prefixes only.
+
+    Inductances uH/nH -> H (Laa ... Lcc) and currents mA -> A (ia, ib, ic);
+    flux is already in Wb (fa, fb, fc). The same conversions as the original
+    script.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Raw winding-table rows.
+
+    Returns
+    -------
+    data : pandas.DataFrame
+        The same DataFrame with the working columns added.
+    """
     data["Laa"] = data["L(Phase_A,Phase_A) [uH]"] * 1e-6
     data["Lbb"] = data["L(Phase_B,Phase_B) [uH]"] * 1e-6
     data["Lcc"] = data["L(Phase_C,Phase_C) [uH]"] * 1e-6
@@ -210,21 +303,53 @@ def working_columns(data):
 def rotor_angle(raw, rotor_mode="from_flux", rotor_ref_deg=0.0, auto_align=True,
                 init_period_to_remove=0.5, num_periods=1.5, elec_deg_per_cycle=360.0,
                 verbose=True):
-    """Add the rotor electrical angle "theta" [rad] to every row (preprocess_v3 logic).
+    """Add the rotor electrical angle "theta" [rad] to every row.
 
-    rotor_mode:
-      "from_flux" (default) - at no load the flux points along the d-axis, so
-          the rotor angle at each step IS the angle of the no-load flux. It is
-          read from the J = 0 blocks and averaged across them (circular mean).
-          Only the first n_keep rows of each block are kept, a whole number of
-          electrical cycles, so the averaging in step 4 is not biased. Cobalt
-          stores 1.5 cycles in 25 rows and keeps 16; Zenodo stores 1 cycle in
-          61 rows and keeps 60.
-      "fixed" - one constant angle, optionally auto-aligned so no-load psi_q = 0.
-      "sweep" - legacy: angle rebuilt from the step index (needs
-          init_period_to_remove, num_periods and elec_deg_per_cycle to be right).
+    The original script's logic. With the default rotor_mode "from_flux" the
+    angle is read from the no-load flux: at no load the flux points along
+    the d-axis, so the rotor angle at each step IS the angle of the no-load
+    flux. It is read from the J = 0 blocks and averaged across them (a
+    circular mean). Only the first n_keep rows of each block are kept, a
+    whole number of electrical cycles, so the averaging in average_cycles()
+    is not biased. Cobalt stores 1.5 cycles in 25 rows and keeps 16; Zenodo
+    stores 1 cycle in 61 rows and keeps 60.
 
-    Returns the working DataFrame (rows kept + working columns + "theta").
+    Parameters
+    ----------
+    raw : pandas.DataFrame
+        Output of load_winding_table().
+    rotor_mode : {"from_flux", "fixed", "sweep"}, optional
+        How the angle is found. "from_flux" (default) as above. "fixed" uses
+        one constant angle, rotor_ref_deg, optionally auto-aligned so the
+        no-load psi_q is zero. "sweep" is the legacy method: the angle is
+        rebuilt from the step index, which needs init_period_to_remove,
+        num_periods and elec_deg_per_cycle to be right.
+    rotor_ref_deg : float, optional
+        Reference angle [deg] for "fixed" and "sweep". Default 0.
+    auto_align : bool, optional
+        "fixed" only: shift the angle so the mean no-load psi_q is zero.
+        Default True.
+    init_period_to_remove : float, optional
+        "sweep" only: electrical periods dropped from the start of each
+        block. Default 0.5.
+    num_periods : float, optional
+        "sweep" only: electrical periods stored in each block. Default 1.5.
+    elec_deg_per_cycle : float, optional
+        "sweep" only: electrical degrees covered by one block's steps, so the
+        step is elec_deg_per_cycle / NStepsPerElectricalCycle. Default 360.
+    verbose : bool, optional
+        Print the detected sweep. Default True.
+
+    Returns
+    -------
+    data : pandas.DataFrame
+        The kept rows, with the working columns and "theta" added.
+
+    Raises
+    ------
+    ValueError
+        If rotor_mode is unknown, or "from_flux" does not find whole no-load
+        blocks.
     """
     n_steps_col = int(raw[COL_NSTEPS].iloc[0])
     block = n_steps_col + 1          # rows per operating point (25 Cobalt, 61 Zenodo)
@@ -299,13 +424,28 @@ def rotor_angle(raw, rotor_mode="from_flux", rotor_ref_deg=0.0, auto_align=True,
 def dq_per_row(data, inductance_method="vectorised"):
     """Park-transform every row at its rotor angle.
 
-    Adds id_raw, iq_raw, psi_d_raw, psi_q_raw (model turns, before scaling) and
-    Ldm_raw, Lqm_raw (the dq transform of the Maxwell inductance matrix).
+    Adds id_raw, iq_raw, psi_d_raw and psi_q_raw (model turns, before
+    scaling), and Ldm_raw and Lqm_raw, the dq transform of the Maxwell
+    inductance matrix.
 
-    inductance_method:
-      "vectorised" - T @ L @ inv(T) for every row at once (default)
-      "loop"       - preprocess_v3's row-by-row iterrows loop (slow; kept for timing)
-    Both compute exactly the same matrix product.
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Output of rotor_angle().
+    inductance_method : {"vectorised", "loop"}, optional
+        "vectorised" (default) computes T @ L @ inv(T) for every row at once.
+        "loop" is the original script's row-by-row iterrows loop, slow and
+        kept for timing. Both compute exactly the same matrix product.
+
+    Returns
+    -------
+    data : pandas.DataFrame
+        The same DataFrame with the dq columns added.
+
+    Raises
+    ------
+    ValueError
+        If inductance_method is not "vectorised" or "loop".
     """
     th = data["theta"].to_numpy()
     d_i, q_i, _ = park_vec(data["ia"].to_numpy(), data["ib"].to_numpy(),
@@ -340,9 +480,24 @@ def dq_per_row(data, inductance_method="vectorised"):
 # 4. COLLAPSE EACH OPERATING POINT (average over whole electrical cycles)
 # ============================================================================
 def average_cycles(data):
-    """One row per operating point (J, TimingAdjustment): the mean of every
-    kept row. Because rotor_angle() kept a whole number of cycles, this mean is
-    the cycle average, i.e. the integral over a period divided by the period."""
+    """Average each operating point over whole electrical cycles.
+
+    Gives one row per operating point (J, TimingAdjustment), holding the
+    mean of every kept row. Because rotor_angle() kept a whole number of
+    cycles, this mean is the cycle average: the integral over a period
+    divided by the period (rectangle rule).
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Output of dq_per_row().
+
+    Returns
+    -------
+    m : pandas.DataFrame
+        One row per operating point: J, TimingAdjustment and the means of
+        id_raw, iq_raw, psi_d_raw, psi_q_raw, Ldm_raw and Lqm_raw.
+    """
     return data.groupby([COL_J, COL_TIMING]).agg(
         id_raw=("id_raw", "mean"),
         iq_raw=("iq_raw", "mean"),
@@ -357,8 +512,26 @@ def average_cycles(data):
 # 5. SCALE TO REAL MACHINE
 # ============================================================================
 def scale(m, turns_ratio, stack_factor):
-    """Model turns -> real machine:
-    flux ~ N*s, current ~ 1/N, inductance ~ N^2*s (N = turns ratio, s = stack factor)."""
+    """Scale the 2D model's values to the real machine.
+
+    Flux scales with N*s, current with 1/N and inductance with N^2*s, where
+    N is the turns ratio and s the stack factor.
+
+    Parameters
+    ----------
+    m : pandas.DataFrame
+        Output of average_cycles().
+    turns_ratio : float
+        Real turns / model turns (Cobalt 33/2).
+    stack_factor : float
+        2D-to-3D correction for field quantities (Cobalt 0.9).
+
+    Returns
+    -------
+    m : pandas.DataFrame
+        The same DataFrame with Id, Iq [A], Psi_d, Psi_q, Psi_mag [Wb] and
+        Ld_matrix, Lq_matrix [H] added.
+    """
     N, s = turns_ratio, stack_factor
     m["Id"] = m["id_raw"] / N
     m["Iq"] = m["iq_raw"] / N
@@ -374,13 +547,32 @@ def scale(m, turns_ratio, stack_factor):
 # 6. PM FLUX
 # ============================================================================
 def pm_flux(m, verbose=True):
-    """psi_pm (no-load psi_d) and psi_pm_eff(Iq), as in preprocess_v3.
+    """Find the magnet flux psi_pm and the cross-saturated psi_pm_eff(Iq).
 
-    psi_pm_eff(Iq) := psi_d along the Id = 0 line. Q-axis current saturates iron
-    shared with the magnet flux path, so the flux the magnets effectively link
-    drops with |Iq|. It is built from the near-zero-Id operating points and
-    interpolated to every row's |Iq| (an even function of Iq).
-    Returns (m, psi_pm).
+    psi_pm is the no-load psi_d. psi_pm_eff(Iq) is psi_d along the Id = 0
+    line: q-axis current saturates iron shared with the magnet flux path, so
+    the flux the magnets effectively link drops with |Iq|. It is built from
+    the near-zero-Id operating points and interpolated to every row's |Iq|
+    (an even function of Iq). The same definition as the original script.
+
+    Parameters
+    ----------
+    m : pandas.DataFrame
+        Output of scale().
+    verbose : bool, optional
+        Print psi_pm and the cross-saturation. Default True.
+
+    Returns
+    -------
+    m : pandas.DataFrame
+        The same DataFrame with Psi_pm_eff [Wb] added.
+    psi_pm : float
+        No-load magnet flux linkage [Wb].
+
+    Raises
+    ------
+    ValueError
+        If there are fewer than three operating points near Id = 0.
     """
     psi_pm = m.loc[m[COL_J] == 0, "Psi_d"].mean()
     psi_q_nl = m.loc[m[COL_J] == 0, "Psi_q"].abs().mean()
@@ -406,17 +598,27 @@ def pm_flux(m, verbose=True):
 # 7. INDUCTANCES ON THE FEA GRID (preprocess_v3's incremental + apparent sections)
 # ============================================================================
 def grid_inductances(m):
-    """Incremental and apparent inductances directly from the FEA points.
+    """Compute incremental and apparent inductances at the FEA points.
 
-    Incremental: finite differences (np.gradient, 3-point central) on the polar
-    J x TimingAdjustment grid, then the chain rule (a 2x2 Jacobian solve) to get
-    d/dId and d/dIq. Columns Ld_inc, Ldq_inc, Lqd_inc, Lq_inc. They are NaN at
-    J = 0, where the polar grid collapses to a point.
+    Incremental: finite differences (np.gradient, 3-point central) on the
+    polar J x TimingAdjustment grid, then the chain rule (a 2x2 Jacobian
+    solve) to get d/dId and d/dIq. They are NaN at J = 0, where the polar
+    grid collapses to a point.
 
-    Apparent: Ld_app = (psi_d - psi_pm_eff)/Id, Lq_app = psi_q/Iq. The 0/0
-    points are filled with their limits, the incremental values.
+    Apparent: Ld_app = (psi_d - psi_pm_eff) / Id and Lq_app = psi_q / Iq.
+    The 0/0 points are filled with their limits, the incremental values.
 
-    Also Saliency = Lq_matrix / Ld_matrix (preprocess_v3's exported saliency).
+    Parameters
+    ----------
+    m : pandas.DataFrame
+        Output of pm_flux().
+
+    Returns
+    -------
+    m : pandas.DataFrame
+        A new DataFrame with Ld_inc, Ldq_inc, Lqd_inc, Lq_inc, Ld_app and
+        Lq_app [H] added, plus Saliency = Lq_matrix / Ld_matrix (the original
+        script's exported saliency).
     """
     Jv = np.sort(m[COL_J].unique())
     Tv = np.sort(m[COL_TIMING].unique())
@@ -483,11 +685,25 @@ def grid_inductances(m):
 # FEA TORQUE (only the Zenodo data has it)
 # ============================================================================
 def attach_fea_torque(m, operating_points_csv):
-    """Add the FEA's own torque, column Torque_FEA_Nm, matched on (J, TimingAdjustment).
+    """Add the FEA's own torque, matched on (J, TimingAdjustment).
 
-    The Zenodo FEA computed torque directly. create_zenodo_input_data.py saves
-    it, averaged per operating point, in zenodo_input_data_operating_points.csv.
-    It is the independent check for torque_from_flux().
+    The Zenodo FEA computed torque directly. create_zenodo_input_data.py
+    saves it, averaged per operating point, in
+    zenodo_input_data_operating_points.csv. It is the independent check for
+    derive.torque_from_flux(). A warning is printed if some points have no
+    match.
+
+    Parameters
+    ----------
+    m : pandas.DataFrame
+        Flux map.
+    operating_points_csv : str or pathlib.Path
+        The converter's operating-point summary, with column Torque_FEA_Nm.
+
+    Returns
+    -------
+    m : pandas.DataFrame
+        A new DataFrame with Torque_FEA_Nm [Nm] added.
     """
     op = pd.read_csv(operating_points_csv)
     key = lambda df: pd.DataFrame({"_J": df[COL_J].round(6), "_T": df[COL_TIMING].round(6)})
@@ -505,20 +721,64 @@ def attach_fea_torque(m, operating_points_csv):
 def build_flux_map(path, turns_ratio, stack_factor, pole_pairs, rotor_mode="from_flux",
                    inductance_method="vectorised", fea_torque_csv=None, verbose=True,
                    **rotor_kwargs):
-    """Run steps 1-7 on one winding table and return the flux map.
+    """Turn one winding table into a flux map (steps 1-7, then torque).
 
-    One row per FEA operating point, with columns:
-      J [A_per_m2], TimingAdjustment [deg]  the FEA sweep settings
-      Id, Iq [A]                            real-machine dq current (peak)
-      Psi_d, Psi_q, Psi_mag, Psi_pm_eff, Psi_pm [Wb]
-      Ld_matrix, Lq_matrix [H]              Maxwell's matrix, dq-transformed
-      Ld_inc, Ldq_inc, Lqd_inc, Lq_inc [H]  finite differences on the FEA grid
-      Ld_app, Lq_app [H]                    apparent (secant)
-      Saliency                              Lq_matrix / Ld_matrix
-      Torque_Nm                             flux formula, 1.5 p (psi_d Iq - psi_q Id)
-      Torque_matrix_Nm                      preprocess_v3's matrix formula (comparison)
-      Imag [A], beta [deg]                  current magnitude and angle
-      Torque_FEA_Nm                         only if fea_torque_csv is given
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        Winding-table CSV in the Maxwell export format.
+    turns_ratio : float
+        Real turns / model turns (Cobalt 33/2, Zenodo 1).
+    stack_factor : float
+        2D-to-3D correction for field quantities (Cobalt 0.9, Zenodo 1).
+    pole_pairs : int
+        Number of pole pairs p (Cobalt 5, Zenodo 8).
+    rotor_mode : {"from_flux", "fixed", "sweep"}, optional
+        How the rotor angle is found; see rotor_angle(). Default "from_flux".
+    inductance_method : {"vectorised", "loop"}, optional
+        How the inductance matrix is Park-transformed; see dq_per_row().
+        Default "vectorised".
+    fea_torque_csv : str or pathlib.Path, optional
+        Operating-point file with the FEA's own torque (Zenodo only). Adds
+        the column Torque_FEA_Nm. Default None.
+    verbose : bool, optional
+        Print the rotor sweep, psi_pm and the inductance comparison. Default
+        True.
+    **rotor_kwargs
+        Further options passed to rotor_angle().
+
+    Returns
+    -------
+    flux_map : pandas.DataFrame
+        One row per FEA operating point. J [A_per_m2] and TimingAdjustment
+        [deg] are the FEA sweep settings; Id and Iq [A] the real-machine dq
+        current (peak); Psi_d, Psi_q, Psi_mag, Psi_pm_eff and Psi_pm [Wb] the
+        flux linkages; Ld_matrix and Lq_matrix [H] Maxwell's matrix,
+        dq-transformed; Ld_inc, Ldq_inc, Lqd_inc and Lq_inc [H] finite
+        differences on the FEA grid; Ld_app and Lq_app [H] the apparent
+        inductances; Saliency = Lq_matrix / Ld_matrix; Torque_Nm the flux
+        formula; Torque_matrix_Nm the original matrix formula (for
+        comparison); Imag [A] and beta [deg] the current magnitude and angle;
+        and Torque_FEA_Nm if fea_torque_csv is given. The cycle-averaged
+        model-turn values (id_raw ... Lqm_raw) are kept too.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    ValueError
+        If the table fails a check in load_winding_table(), rotor_angle(),
+        dq_per_row() or pm_flux().
+
+    Examples
+    --------
+    >>> flux_map = build_flux_map("Input_Data/Cobalt/cobalt_input_data.csv",
+    ...                           turns_ratio=33 / 2, stack_factor=0.9,
+    ...                           pole_pairs=5, verbose=False)
+    >>> len(unique_operating_points(flux_map))
+    71
+    >>> print(f"psi_pm = {flux_map['Psi_pm'].iloc[0] * 1e3:.1f} mWb")
+    psi_pm = 48.2 mWb
     """
     raw = load_winding_table(path)                                   # 1
     data = rotor_angle(raw, rotor_mode, verbose=verbose, **rotor_kwargs)   # 2
@@ -544,7 +804,16 @@ def build_flux_map(path, turns_ratio, stack_factor, pole_pairs, rotor_mode="from
 
 
 def print_diagnostics(m):
-    """preprocess_v3's console comparison of the inductance definitions, plus peak torque."""
+    """Print the original script's comparison of the inductance definitions.
+
+    Shows the range of the incremental, apparent and matrix Ld and Lq, the
+    cross-coupling, and the peak torque by both torque formulas.
+
+    Parameters
+    ----------
+    m : pandas.DataFrame
+        Flux map from build_flux_map().
+    """
     print("\n--- Inductance definitions compared (uH, real machine) ---")
     sub = m.dropna(subset=["Lq_inc"])
     print(f"Lq: incremental {sub.Lq_inc.min()*1e6:6.0f}..{sub.Lq_inc.max()*1e6:4.0f} | "
@@ -567,8 +836,18 @@ def unique_operating_points(m):
 
     The FEA sweeps repeat some points: J = 0 is run once per angle, and on a
     full-circle sweep TimingAdjustment = -180 and +180 are the same angle. A
-    repeat in both the training and test folds would make cross-validation look
-    better than it is, so only the first copy is kept.
+    repeat in both the training and test folds would make cross-validation
+    look better than it is, so only the first copy is kept.
+
+    Parameters
+    ----------
+    m : pandas.DataFrame
+        Flux map from build_flux_map().
+
+    Returns
+    -------
+    pts : pandas.DataFrame
+        The unique operating points, re-indexed from 0.
     """
     t = ((m[COL_TIMING] + 180.0) % 360.0) - 180.0               # -180 and +180 -> same
     t = np.where(m[COL_J] == 0, 0.0, t)                         # every J=0 row is one point
@@ -577,8 +856,21 @@ def unique_operating_points(m):
 
 
 def base_values(m, pole_pairs):
-    """Per-unit bases for reporting errors on a common scale across motors:
-    I_base = largest |I|, psi_base = psi_pm, T_base = 1.5 * p * psi_pm * I_base."""
+    """Compute the per-unit bases used to compare errors across motors.
+
+    Parameters
+    ----------
+    m : pandas.DataFrame
+        Flux map from build_flux_map().
+    pole_pairs : int
+        Number of pole pairs p.
+
+    Returns
+    -------
+    bases : dict of float
+        "I_base" = the largest |I| [A], "psi_base" = psi_pm [Wb] and
+        "T_base" = 1.5 * p * psi_pm * I_base [Nm].
+    """
     I_base = float(np.hypot(m["Id"], m["Iq"]).max())
     psi_base = float(m["Psi_pm"].iloc[0])
     return {"I_base": I_base, "psi_base": psi_base,
@@ -586,16 +878,27 @@ def base_values(m, pole_pairs):
 
 
 def plot_flux_map(m, title="", path=None, show=False):
-    """The six quantities of preprocess_v3's flux-map plot (torque from the flux
-    formula), each drawn as a filled colour map over the Id-Iq plane.
+    """Plot six quantities of the flux map as filled colour maps over Id-Iq.
 
-    The colour between FEA points is a straight-line blend of the neighbouring
-    points (a triangulation of the FEA points, no fitted model), so the figure
-    shows only the FEA data. The FEA points are drawn on top. Signed quantities
-    (Zenodo's torque, which runs in all four quadrants) use a red-blue scale
-    centred on zero; everything else uses a light single-hue scale so the dark
-    end never hides the points. Saved to `path` if given; shown on screen only
-    if show=True.
+    The panels are the original script's six: Maxwell's matrix Ld and Lq,
+    saliency, |psi|, torque (from the flux formula) and psi_pm_eff. The
+    colour between FEA points is a straight-line blend of the neighbouring
+    points (a triangulation, no fitted model), so the figure shows only the
+    FEA data; the points are drawn on top. Signed quantities (Zenodo's
+    torque, which runs in all four quadrants) use a red-blue scale centred
+    on zero. Everything else uses a light single-hue scale so the dark end
+    never hides the points.
+
+    Parameters
+    ----------
+    m : pandas.DataFrame
+        Flux map from build_flux_map().
+    title : str, optional
+        Figure title. Default "" (no title).
+    path : str or pathlib.Path, optional
+        Save the figure here as a PNG. Default None (not saved).
+    show : bool, optional
+        Also show the figure in a window. Default False.
     """
     import matplotlib
     if not show:

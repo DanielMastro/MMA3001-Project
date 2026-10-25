@@ -18,6 +18,8 @@ folder, using the same Python interpreter that is running this script.
 
 from __future__ import annotations
 
+__docformat__ = "numpy"   # docstring style, read by pdoc
+
 import os
 import subprocess
 import sys
@@ -28,10 +30,21 @@ REPORT = ROOT / "Docs" / "test_report.txt"
 
 
 def write_test_report(report_path=REPORT):
-    """Run `pytest -v` from the repo folder and save everything it prints.
+    """Run `pytest -v` from the repository folder and save everything it prints.
 
-    Returns pytest's exit code: 0 means every test passed, anything else means
-    at least one failed (the report then says which, and why).
+    pytest runs as a separate process, so it behaves exactly as it does in
+    the terminal.
+
+    Parameters
+    ----------
+    report_path : str or pathlib.Path, optional
+        Where to save the report. Default Docs/test_report.txt.
+
+    Returns
+    -------
+    exit_code : int
+        pytest's exit code: 0 means every test passed; anything else means at
+        least one failed, and the report says which and why.
     """
     # Run pytest as a separate process so it behaves exactly as it does in the
     # terminal. PYTHONIOENCODING makes it write UTF-8 even on Windows, where

@@ -1,0 +1,60 @@
+{
+  "source": "Zenodo record 7866449 (CC BY 4.0), https://doi.org/10.5281/zenodo.7866449",
+  "cite": "Machines 2023, 11(8), 784, https://doi.org/10.3390/machines11080784",
+  "converter": "create_zenodo_input_data.py",
+  "parameters": {
+    "pole_pairs": 8,
+    "conductor_area_m2 (J proxy)": 1.0,
+    "time_unit_used": "ms",
+    "electrical_period_s": 0.0025,
+    "rpm_derived": 3000.0,
+    "samples_per_block": 61,
+    "operating_points": 2331
+  },
+  "analysis_settings_for_this_file": {
+    "turns_ratio": 1,
+    "stack_factor": 1,
+    "pole_pairs": 8
+  },
+  "columns": {
+    "J [A_per_m2]": "PROXY: Im / conductor_area (area not in dataset)",
+    "NStepsPerElectricalCycle []": "samples per block - 1",
+    "RPM [rpm]": "DERIVED from time span and pole pairs",
+    "TimingAdjustment [deg]": "= Gamma (0 = +q, 90 = -d)",
+    "Time [s]": "SOURCE time column",
+    "L(Phase_x,Phase_y)": "DERIVED: incremental inductance dpsi_abc/di_abc per rotor sample, from finite differences of SOURCE psi_d, psi_q over the (Im, Gamma) grid; cross terms symmetrised; zero-sequence = 0. NOT Maxwell frozen-permeability values.",
+    "FluxLinkage(Phase_x) [Wb]": "RECONSTRUCTED: inverse Park of SOURCE psi_d, psi_q; zero-sequence = 0",
+    "InducedVoltage(Phase_x) [uv]": "DERIVED: periodic central difference of reconstructed phase flux",
+    "InputCurrent(Phase_x) [mA]": "RECONSTRUCTED: inverse Park of Id=-Im*sin(Gamma), Iq=Im*cos(Gamma)"
+  },
+  "inductance_stats": {
+    "Ld_incremental_uH_range": [
+      16.242253533052608,
+      132.36078652614702
+    ],
+    "Lq_incremental_uH_range": [
+      28.22338206684032,
+      193.58755704488965
+    ],
+    "Ldq_cross_uH_range": [
+      -51.31378871169648,
+      51.351861096474025
+    ],
+    "reciprocity_|Ldq-Lqd|_median_uH": 0.3306671264249696,
+    "reciprocity_|Ldq-Lqd|_p95_uH": 2.2583799656992234
+  },
+  "self_check": {
+    "max_err_psi_d_Wb": 5.551115123125783e-17,
+    "max_err_psi_q_Wb": 3.469446951953614e-17,
+    "max_err_id_A": 2.2737367544323206e-13,
+    "max_err_iq_A": 2.2737367544323206e-13,
+    "max_err_Ld_from_matrix_uH": 9.947598300641403e-14,
+    "max_err_Lq_from_matrix_uH": 1.4210854715202004e-13,
+    "torque_flux_vs_FEA_rms_Nm": 0.045804213719677286,
+    "torque_FEA_max_Nm": 331.0776995811963
+  },
+  "notes": [
+    "Source readme says one electrical rotation lasts 2.5 s, but the CSV time header is in ms (0-2.5 ms). The header is used by default (3000 rpm); use --time-unit s for the readme's value (3 rpm). Only RPM and InducedVoltage depend on this.",
+    "Gamma = -180 and +180 are the same physical operating point; Im = 0 is repeated for every Gamma. Both duplicates are kept, as in the source."
+  ]
+}

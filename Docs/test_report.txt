@@ -29,4 +29,4 @@ Scripts/Tests/test_zenodo_input_data.py::test_inductance_matrix_round_trip PASSE
 Scripts/Tests/test_zenodo_input_data.py::test_inductance_derivation_known_motor PASSED [ 95%]
 Scripts/Tests/test_zenodo_input_data.py::test_real_conversion_self_checks PASSED [100%]
 
-============================= 22 passed in 11.67s =============================
+============================= 22 passed in 13.63s =============================

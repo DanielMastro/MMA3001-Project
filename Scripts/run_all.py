@@ -39,6 +39,8 @@ Docs/
 
 from __future__ import annotations
 
+__docformat__ = "numpy"   # docstring style, read by pdoc
+
 import time
 from pathlib import Path
 
@@ -79,18 +81,37 @@ TIME_ZENODO_LOOP = True            # time preprocess_v3's row loop on Zenodo's 1
 
 
 def heading(text):
-    """Print a section heading so the console output is easy to follow."""
+    """Print a section heading so the console output is easy to follow.
+
+    Parameters
+    ----------
+    text : str
+        Heading text.
+    """
     print("\n" + "=" * 72 + f"\n{text}\n" + "=" * 72)
 
 
 def save(df, path):
-    """Write a table and say where it went."""
+    """Write a table to CSV and say where it went.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Table to write (without its index).
+    path : pathlib.Path
+        Destination file; missing folders are created.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
     print(f"  saved {path.relative_to(ROOT)}")
 
 
 def main():
+    """Run the whole pipeline, steps 1-9 in the module docstring.
+
+    Writes every table and figure into Output_Data/ and the test report into
+    Docs/test_report.txt, printing each step to the console.
+    """
     t_start = time.perf_counter()
 
     # ------------------------------------------------------------------

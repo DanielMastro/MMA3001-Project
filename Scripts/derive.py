@@ -27,6 +27,8 @@ Units: A, Wb, H, Nm.
 
 from __future__ import annotations
 
+__docformat__ = "numpy"   # docstring style, read by pdoc
+
 import numpy as np
 import pandas as pd
 
@@ -35,32 +37,103 @@ import pandas as pd
 # TORQUE
 # ============================================================================
 def torque_from_flux(psi_d, psi_q, i_d, i_q, pole_pairs):
-    """Electromagnetic torque from dq flux linkage and current.
+    """Compute electromagnetic torque from dq flux linkage and current.
 
-    T = 1.5 * p * (psi_d * iq - psi_q * id)
+    Uses T = 1.5 * p * (psi_d * i_q - psi_q * i_d). The 1.5 factor belongs to
+    the amplitude-invariant (peak) dq convention used everywhere in this
+    project. No inductance is involved, so the torque is exact for whatever
+    flux it is given.
 
-    The 1.5 factor belongs to the amplitude-invariant (peak) dq convention used
-    everywhere in this project. Works on scalars or numpy arrays.
+    Parameters
+    ----------
+    psi_d : float or array_like
+        d-axis flux linkage [Wb].
+    psi_q : float or array_like
+        q-axis flux linkage [Wb].
+    i_d : float or array_like
+        d-axis current [A], peak value.
+    i_q : float or array_like
+        q-axis current [A], peak value.
+    pole_pairs : int
+        Number of pole pairs p.
+
+    Returns
+    -------
+    torque : numpy.ndarray or float
+        Torque [Nm], broadcast to the shape of the inputs.
+
+    See Also
+    --------
+    matrix_torque : The original script's inductance-based formula.
+
+    Examples
+    --------
+    >>> float(torque_from_flux(0.05, 0.0, 0.0, 100.0, pole_pairs=5))
+    37.5
     """
     return 1.5 * pole_pairs * (np.asarray(psi_d) * np.asarray(i_q)
                                - np.asarray(psi_q) * np.asarray(i_d))
 
 
 def matrix_torque(psi_pm_eff, Ld, Lq, i_d, i_q, pole_pairs):
-    """preprocess_v3's torque formula: T = 1.5 * p * (psi_pm_eff + (Ld - Lq) * Id) * Iq.
+    """Compute torque with the original script's inductance formula.
 
-    Kept only as the ALTERNATIVE that torque_from_flux() is compared against.
-    It equals the flux formula only when Ld and Lq are apparent inductances that
-    reproduce the FEA flux. The Maxwell matrix inductances are not, so this
-    formula drifts from the FEA torque at high load.
+    Uses T = 1.5 * p * (psi_pm_eff + (Ld - Lq) * i_d) * i_q, the formula in
+    History/preprocess_v3.py. It is kept only as the alternative that
+    torque_from_flux() is compared against. It equals the flux formula only
+    when Ld and Lq are apparent inductances that reproduce the FEA flux.
+    Maxwell's matrix inductances do not, so with them this formula drifts
+    from the FEA torque at high load.
+
+    Parameters
+    ----------
+    psi_pm_eff : float or array_like
+        Effective magnet flux linkage at the operating point's Iq [Wb].
+    Ld : float or array_like
+        d-axis inductance [H].
+    Lq : float or array_like
+        q-axis inductance [H].
+    i_d : float or array_like
+        d-axis current [A], peak value.
+    i_q : float or array_like
+        q-axis current [A], peak value.
+    pole_pairs : int
+        Number of pole pairs p.
+
+    Returns
+    -------
+    torque : numpy.ndarray or float
+        Torque [Nm], broadcast to the shape of the inputs.
+
+    See Also
+    --------
+    torque_from_flux : The flux formula used for every reported torque.
     """
     return 1.5 * pole_pairs * (np.asarray(psi_pm_eff)
                                + (np.asarray(Ld) - np.asarray(Lq)) * np.asarray(i_d)) * np.asarray(i_q)
 
 
 def torque(model, Id, Iq, pole_pairs):
-    """Torque at any (Id, Iq): the flux model's predicted flux put through
-    torque_from_flux()."""
+    """Predict torque at any operating point from a fitted flux model.
+
+    The model's predicted flux is passed through torque_from_flux().
+
+    Parameters
+    ----------
+    model : flux model
+        A fitted model from models.py (anything with predict_flux).
+    Id : float or array_like
+        d-axis current [A], peak value.
+    Iq : float or array_like
+        q-axis current [A], peak value.
+    pole_pairs : int
+        Number of pole pairs p.
+
+    Returns
+    -------
+    torque : numpy.ndarray
+        Torque [Nm], the broadcast shape of Id and Iq.
+    """
     psi_d, psi_q = model.predict_flux(Id, Iq)
     return torque_from_flux(psi_d, psi_q, Id, Iq, pole_pairs)
 
@@ -78,17 +151,40 @@ _STENCILS = {
 
 
 def incremental_inductance(model, Id, Iq, method="analytic", h=None):
-    """Incremental (differential) inductances at (Id, Iq), in henries.
+    """Compute the incremental (differential) inductances at (Id, Iq).
 
-    Returns a dict:
-        "Ld"  = dpsi_d/dId    "Lq"  = dpsi_q/dIq
-        "Ldq" = dpsi_d/dIq    "Lqd" = dpsi_q/dId   (cross-coupling; equal for
-                                                     a physically consistent map)
+    These are the slopes of the flux map, the inductances the inverter's
+    current controller sees. With method="analytic" they come from the
+    model's own exact gradient (flux_gradient). With "fd3" or "fd5" a
+    finite-difference stencil is applied to the model's predict_flux with
+    step h. Their errors fall as h^2 and h^4; they are the alternatives
+    compared in the report.
 
-    method = "analytic" uses model.flux_gradient (exact for the fitted model).
-    method = "fd3" / "fd5" applies a finite-difference stencil to
-    model.predict_flux with step h amps (default 1 % of the largest training
-    current). These are the alternatives compared in the report.
+    Parameters
+    ----------
+    model : flux model
+        A fitted model from models.py.
+    Id : float or array_like
+        d-axis current [A], peak value.
+    Iq : float or array_like
+        q-axis current [A], peak value.
+    method : {"analytic", "fd3", "fd5"}, optional
+        How the derivative is taken. Default "analytic".
+    h : float, optional
+        Finite-difference step [A] for "fd3" and "fd5". Default 1 % of the
+        largest training current (model.I_base). Ignored for "analytic".
+
+    Returns
+    -------
+    inductances : dict of numpy.ndarray
+        Inductances [H], each the shape of Id and Iq: "Ld" = dpsi_d/dId,
+        "Lq" = dpsi_q/dIq, and the cross-coupling terms "Ldq" = dpsi_d/dIq
+        and "Lqd" = dpsi_q/dId (equal for a physically consistent map).
+
+    Raises
+    ------
+    ValueError
+        If method is not "analytic", "fd3" or "fd5".
     """
     Id = np.asarray(Id, dtype=float)
     Iq = np.asarray(Iq, dtype=float)
@@ -120,19 +216,38 @@ def incremental_inductance(model, Id, Iq, method="analytic", h=None):
 # APPARENT INDUCTANCE
 # ============================================================================
 def apparent_inductance(model, Id, Iq, rel_tol=0.02, abs_tol=0.5):
-    """Apparent (secant) inductances, the ones that satisfy psi = psi_pm + L * i.
+    """Compute the apparent (secant) inductances at (Id, Iq).
 
-        Ld = (psi_d(Id, Iq) - psi_pm_eff(Iq)) / Id     with psi_pm_eff(Iq) = psi_d(0, Iq)
-        Lq =  psi_q(Id, Iq) / Iq
+    These are the inductances that satisfy psi = psi_pm + L * i exactly:
 
-    psi_pm_eff(Iq) is psi_d along the Id = 0 line, the same definition preprocess_v3 used
-    (it falls with |Iq| because of cross-saturation).
+        Ld = (psi_d(Id, Iq) - psi_pm_eff(Iq)) / Id,  with psi_pm_eff(Iq) = psi_d(0, Iq)
+        Lq = psi_q(Id, Iq) / Iq
 
-    Near the axes these are 0/0, so where |Id| (or |Iq|) is below
-    max(rel_tol * |I|, abs_tol) the limiting value, the incremental inductance,
-    is used instead. The 2 % and 0.5 A thresholds are preprocess_v3's.
+    psi_pm_eff(Iq) is psi_d along the Id = 0 line, the same definition the
+    original script used. It falls with |Iq| because of cross-saturation.
+    Near the axes the ratios are 0/0, so where |Id| (or |Iq|) is below
+    max(rel_tol * |I|, abs_tol) the limiting value, the incremental
+    inductance, is used instead.
 
-    Returns a dict with "Ld", "Lq" (H) and "Psi_pm_eff" (Wb).
+    Parameters
+    ----------
+    model : flux model
+        A fitted model from models.py.
+    Id : float or array_like
+        d-axis current [A], peak value.
+    Iq : float or array_like
+        q-axis current [A], peak value.
+    rel_tol : float, optional
+        Relative threshold for the 0/0 fallback, as a fraction of |I|.
+        Default 0.02, the original script's value.
+    abs_tol : float, optional
+        Absolute threshold for the 0/0 fallback [A]. Default 0.5, the
+        original script's value.
+
+    Returns
+    -------
+    inductances : dict of numpy.ndarray
+        "Ld" and "Lq" [H] and "Psi_pm_eff" [Wb], each the shape of Id and Iq.
     """
     Id = np.asarray(Id, dtype=float)
     Iq = np.asarray(Iq, dtype=float)
@@ -154,11 +269,37 @@ def apparent_inductance(model, Id, Iq, rel_tol=0.02, abs_tol=0.5):
 # OUTPUT MAPS (what gets handed to the inverter team)
 # ============================================================================
 def polar_grid(I_max, beta_min=0.0, beta_max=90.0, dI=1.0, dbeta=1.0):
-    """A dense grid of operating points in current magnitude x current angle.
+    """Make a dense grid of operating points in current magnitude and angle.
 
-    Same layout as the FEA sweeps (magnitude rings x angles), just much finer.
-    Id = -|I| sin(beta), Iq = |I| cos(beta). The zero-current point appears once.
-    Returns (Id, Iq) as flat arrays.
+    The layout matches the FEA sweeps (magnitude rings x angles), only finer,
+    with Id = -|I| sin(beta) and Iq = |I| cos(beta). The zero-current point
+    appears once.
+
+    Parameters
+    ----------
+    I_max : float
+        Largest current magnitude [A].
+    beta_min : float, optional
+        First current angle [deg]. Default 0 (pure +q).
+    beta_max : float, optional
+        Last current angle [deg]. Default 90 (pure -d).
+    dI : float, optional
+        Step in current magnitude [A]. Default 1.
+    dbeta : float, optional
+        Step in current angle [deg]. Default 1.
+
+    Returns
+    -------
+    Id : numpy.ndarray
+        d-axis current of every grid point [A], as a flat array.
+    Iq : numpy.ndarray
+        q-axis current of every grid point [A], the same length.
+
+    Examples
+    --------
+    >>> Id, Iq = polar_grid(113.0)
+    >>> Id.shape
+    (10284,)
     """
     I = np.linspace(0.0, I_max, int(round(I_max / dI)) + 1)
     beta = np.deg2rad(np.linspace(beta_min, beta_max, int(round((beta_max - beta_min) / dbeta)) + 1))
@@ -169,12 +310,45 @@ def polar_grid(I_max, beta_min=0.0, beta_max=90.0, dI=1.0, dbeta=1.0):
 
 
 def output_map(model, Id, Iq, pole_pairs):
-    """Every output at the given operating points, as one table.
+    """Tabulate every output at the given operating points.
 
-    Columns: Id, Iq [A]; Psi_d, Psi_q, Psi_mag, Psi_pm_eff [Wb]; Torque_Nm;
-    apparent and incremental Ld, Lq and the cross-coupling Ldq [uH];
-    Saliency (apparent Lq/Ld); Extrapolated (True = outside the FEA range,
-    treat with care).
+    One row per operating point with flux, torque, both kinds of inductance
+    and an extrapolation flag. run_all.py writes this table for Cobalt to
+    Output_Data/Cobalt/cobalt_output_map.csv.
+
+    Parameters
+    ----------
+    model : flux model
+        A fitted model from models.py.
+    Id : array_like
+        d-axis currents [A], peak values.
+    Iq : array_like
+        q-axis currents [A], peak values, the same length as Id.
+    pole_pairs : int
+        Number of pole pairs p.
+
+    Returns
+    -------
+    table : pandas.DataFrame
+        One row per operating point, with columns Id and Iq [A]; Psi_d,
+        Psi_q, Psi_mag and Psi_pm_eff [Wb]; Torque_Nm; Ld_app_uH, Lq_app_uH,
+        Ld_inc_uH and Lq_inc_uH [uH]; Ldq_inc_uH, the cross-coupling (mean of
+        dpsi_d/dIq and dpsi_q/dId) [uH]; Saliency (apparent Lq/Ld); and
+        Extrapolated (True outside the FEA range, where results should be
+        treated with care).
+
+    Examples
+    --------
+    >>> import preprocess as pp, models as md
+    >>> flux_map = pp.build_flux_map("Input_Data/Cobalt/cobalt_input_data.csv",
+    ...                              turns_ratio=33 / 2, stack_factor=0.9,
+    ...                              pole_pairs=5, verbose=False)
+    >>> pts = pp.unique_operating_points(flux_map)
+    >>> model = md.polynomial_regression(6).fit(pts["Id"], pts["Iq"],
+    ...                                         pts["Psi_d"], pts["Psi_q"])
+    >>> out = output_map(model, Id=[-20.0], Iq=[60.0], pole_pairs=5)
+    >>> print(f"{out['Torque_Nm'].iloc[0]:.1f} Nm, extrapolated: {out['Extrapolated'].iloc[0]}")
+    20.6 Nm, extrapolated: False
     """
     Id = np.asarray(Id, dtype=float)
     Iq = np.asarray(Iq, dtype=float)
