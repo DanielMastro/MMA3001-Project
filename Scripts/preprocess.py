@@ -586,29 +586,70 @@ def base_values(m, pole_pairs):
 
 
 def plot_flux_map(m, title="", path=None, show=False):
-    """preprocess_v3's 2x3 scatter of the flux map (torque panel now uses the flux formula).
-    Saved to `path` if given; shown on screen only if show=True."""
+    """The six quantities of preprocess_v3's flux-map plot (torque from the flux
+    formula), each drawn as a filled colour map over the Id-Iq plane.
+
+    The colour between FEA points is a straight-line blend of the neighbouring
+    points (a triangulation of the FEA points, no fitted model), so the figure
+    shows only the FEA data. The FEA points are drawn on top. Signed quantities
+    (Zenodo's torque, which runs in all four quadrants) use a red-blue scale
+    centred on zero; everything else uses a light single-hue scale so the dark
+    end never hides the points. Saved to `path` if given; shown on screen only
+    if show=True.
+    """
     import matplotlib
     if not show:
         matplotlib.use("Agg")                   # draw off-screen (no window)
     import matplotlib.pyplot as plt
+    import matplotlib.tri as mtri
+    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.ticker import MaxNLocator
 
-    panels = [(m["Ld_matrix"] * 1e6, "Ld matrix [uH]"),
-              (m["Lq_matrix"] * 1e6, "Lq matrix [uH]"),
-              (m["Saliency"], "Saliency Lq/Ld [-]"),
-              (m["Psi_mag"], "|psi| [Wb]"),
-              (m["Torque_Nm"], "Torque [Nm]"),
-              (m["Psi_pm_eff"], "psi_pm_eff [Wb]")]
-    fig, ax = plt.subplots(2, 3, figsize=(18, 10))
-    for a, (v, lab) in zip(ax.flat, panels):
-        sc = a.scatter(m["Id"], m["Iq"], c=v)
-        a.set_title(lab); a.set_xlabel("Id [A]"); a.set_ylabel("Iq [A]"); a.grid(True)
-        fig.colorbar(sc, ax=a, label=lab)
-    if title:
-        fig.suptitle(title)
-    plt.tight_layout()
-    if path is not None:
-        fig.savefig(path, dpi=120)
-    if show:
-        plt.show()
-    plt.close(fig)
+    ink, quiet = "#1f2328", "#59636e"           # text colour, axis/point colour
+    light_blues = LinearSegmentedColormap.from_list(
+        "light_blues", plt.cm.Blues(np.linspace(0.04, 0.62, 256)))
+    red_blue = LinearSegmentedColormap.from_list(
+        "light_red_blue", plt.cm.RdBu_r(np.linspace(0.12, 0.88, 256)))
+
+    # One value per operating point (repeated no-load points are averaged)
+    pts = m.groupby(["Id", "Iq"], as_index=False).mean(numeric_only=True)
+    tri = mtri.Triangulation(pts["Id"], pts["Iq"])
+    dense = len(pts) > 300                      # Zenodo: full-size dots would hide the colours
+
+    panels = [(pts["Ld_matrix"] * 1e6, "Ld matrix [µH]"),
+              (pts["Lq_matrix"] * 1e6, "Lq matrix [µH]"),
+              (pts["Saliency"], "Saliency Lq/Ld [–]"),
+              (pts["Psi_mag"] * 1e3, "|ψ| [mWb]"),
+              (pts["Torque_Nm"], "Torque [Nm]"),
+              (pts["Psi_pm_eff"] * 1e3, "ψpm,eff [mWb]")]
+
+    style = {"font.size": 10, "axes.edgecolor": quiet, "axes.labelcolor": ink,
+             "xtick.color": quiet, "ytick.color": quiet,
+             "axes.spines.top": False, "axes.spines.right": False}
+    with plt.rc_context(style):
+        fig, ax = plt.subplots(2, 3, figsize=(15, 9.4))
+        for a, (v, lab) in zip(ax.flat, panels):
+            # Colour range from the 1st to 99th percentile, so a few extreme
+            # points don't wash out the rest (they show in the end arrows)
+            lo, hi = np.percentile(v, [1, 99])
+            signed = lo < 0 < hi and min(-lo, hi) > 0.1 * max(-lo, hi)
+            if signed:                          # centre the scale on zero
+                lo, hi = -max(-lo, hi), max(-lo, hi)
+            levels = MaxNLocator(nbins=12).tick_values(lo, hi)   # round-number bands
+            cf = a.tricontourf(tri, v, levels=levels, extend="both",
+                               cmap=red_blue if signed else light_blues)
+            if dense:
+                a.scatter(pts["Id"], pts["Iq"], s=0.6, color=quiet, alpha=0.5, lw=0)
+            else:
+                a.scatter(pts["Id"], pts["Iq"], s=7, facecolor="white", edgecolor=quiet, lw=0.5)
+            a.set(xlabel="Id [A]", ylabel="Iq [A]", aspect="equal")
+            a.set_title(lab, loc="left", color=ink, fontsize=11)
+            fig.colorbar(cf, ax=a, shrink=0.8)
+        if title:
+            fig.suptitle(title, x=0.01, ha="left", color=ink, fontsize=13)
+        fig.tight_layout()
+        if path is not None:
+            fig.savefig(path, dpi=120, bbox_inches="tight")
+        if show:
+            plt.show()
+        plt.close(fig)
