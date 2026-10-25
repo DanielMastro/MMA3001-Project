@@ -20,12 +20,12 @@ Accuracy (all errors are per-unit, so the two motors compare directly)
                         Cobalt-like coarse subset of the Zenodo map, then test
                         on the dense points it never saw and against the FEA's
                         own torque.
-    torque_formula_comparison()       flux torque vs 07-07's matrix torque
+    torque_formula_comparison()       flux torque vs preprocess_v3's matrix torque
     matrix_inductance_consistency()   do Maxwell's matrix Ld/Lq reproduce the
                                       FEA flux?
 
 Performance
-    time_preprocessing()  07-07's row-by-row loop vs the vectorised transform
+    time_preprocessing()  preprocess_v3's row-by-row loop vs the vectorised transform
     profile_pipeline()    cProfile: where preprocessing spends its time
     model_costs()         per model: fit time, prediction time, memory, FLOPs
 """
@@ -249,7 +249,7 @@ def zenodo_validation(factories, table, pole_pairs, **split_kwargs):
 # FORMULA CHECKS
 # ============================================================================
 def torque_formula_comparison(table, pole_pairs):
-    """Flux-formula torque vs 07-07's matrix-inductance formula.
+    """Flux-formula torque vs preprocess_v3's matrix-inductance formula.
 
     With FEA torque available (Zenodo), both are scored against it. Without it
     (Cobalt), the two formulas are compared with each other.
@@ -258,7 +258,7 @@ def torque_formula_comparison(table, pole_pairs):
     base = pp.base_values(table, pole_pairs)
     rows = []
     ref_col = "Torque_FEA_Nm" if "Torque_FEA_Nm" in pts else "Torque_Nm"
-    for col, label in (("Torque_Nm", "flux formula"), ("Torque_matrix_Nm", "07-07 matrix formula")):
+    for col, label in (("Torque_Nm", "flux formula"), ("Torque_matrix_Nm", "preprocess_v3 matrix formula")):
         e = pts[col] - pts[ref_col]
         rows.append({"formula": label, "reference": ref_col,
                      "rmse_Nm": _rms(e), "max_abs_Nm": float(e.abs().max()),
@@ -290,7 +290,7 @@ def matrix_inductance_consistency(table):
 # PERFORMANCE
 # ============================================================================
 def time_preprocessing(path, settings, repeats=3):
-    """Time the Park transform of the inductance matrix: 07-07's row-by-row
+    """Time the Park transform of the inductance matrix: preprocess_v3's row-by-row
     loop vs the vectorised version (best of `repeats` runs each). Also checks
     that both give the same numbers."""
     raw = pp.load_winding_table(path)

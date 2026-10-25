@@ -1,7 +1,7 @@
 """
 test_preprocess.py - checks for preprocess.py.
 
-  * 07-07's row loop and the vectorised transform give the same numbers
+  * preprocess_v3's row loop and the vectorised transform give the same numbers
   * the full preprocessing recovers the known-answer motor's flux and inductances
   * the Park transform and its inverse undo each other
   * bad input files are rejected with a clear error
@@ -16,7 +16,7 @@ from conftest import known_flux, known_inductance, PSI_PM
 
 
 def test_loop_and_vectorised_agree(known_winding_table):
-    """07-07's iterrows loop and the vectorised version compute the same Ld, Lq."""
+    """preprocess_v3's iterrows loop and the vectorised version compute the same Ld, Lq."""
     a = pp.build_flux_map(known_winding_table, 1, 1, 4, inductance_method="loop", verbose=False)
     b = pp.build_flux_map(known_winding_table, 1, 1, 4, inductance_method="vectorised", verbose=False)
     np.testing.assert_allclose(a["Ld_matrix"], b["Ld_matrix"], rtol=1e-12)
@@ -37,7 +37,7 @@ def test_recovers_known_motor(known_winding_table):
     # Matrix columns: converter's 5-point stencil on the 10 A x 10 deg grid -> very accurate
     np.testing.assert_allclose(u["Ld_matrix"], exact["Ld"], rtol=1e-3)
     np.testing.assert_allclose(u["Lq_matrix"], exact["Lq"], rtol=1e-3)
-    # 07-07's grid finite differences (3-point stencil): within 1 % on the interior
+    # preprocess_v3's grid finite differences (3-point stencil): within 1 % on the interior
     # rings (the stencil's bias on a 10 deg grid is about 0.5 %). The outermost ring
     # is excluded: np.gradient is one-sided there, about 2 % off on this motor.
     ok = u["Ld_inc"].notna() & (u[pp.COL_J] < u[pp.COL_J].max())

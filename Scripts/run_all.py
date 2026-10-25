@@ -23,14 +23,14 @@ Steps
   6. Validate the frozen script on the independent Zenodo motor, then repeat
      the network's tests at NN_SEEDS random seeds (its result depends on the
      random starting weights; the other models are deterministic).
-  7. Formula checks: flux torque vs 07-07's matrix torque, and whether the
+  7. Formula checks: flux torque vs preprocess_v3's matrix torque, and whether the
      matrix inductances reproduce the FEA flux.
-  8. Performance: 07-07 loop vs vectorised, profiling, and the cost of each model.
+  8. Performance: preprocess_v3 loop vs vectorised, profiling, and the cost of each model.
   9. Run the pytest tests and save the report (run_tests.py).
 
 Output_Data/
   Cobalt/       cobalt_flux_map.csv/.png, cobalt_output_map.csv,
-                cobalt_output_at_fea_points.csv, cobalt_07-07_format.csv
+                cobalt_output_at_fea_points.csv
   Zenodo_IPM/   zenodo_ipm_flux_map.csv/.png
   Validation/   every comparison, validation and performance table
 Docs/
@@ -75,7 +75,7 @@ CV_FOLDS, CV_REPEATS = 5, 3        # 5-fold cross-validation, repeated with 3 sh
 HELD_OUT_RINGS = 2                 # outer current rings held out for extrapolation
 NN_SEEDS = range(10)               # random seeds for the network's seed-sensitivity check
 OUTPUT_GRID_STEP = {"dI": 1.0, "dbeta": 1.0}   # output map: 1 A x 1 deg
-TIME_ZENODO_LOOP = True            # time 07-07's row loop on Zenodo's 140,000 rows (about 10-60 s)
+TIME_ZENODO_LOOP = True            # time preprocess_v3's row loop on Zenodo's 140,000 rows (about 10-60 s)
 
 
 def heading(text):
@@ -114,7 +114,6 @@ def main():
                          OUTPUT / name / f"{name.lower()}_flux_map.png")
     cobalt, zenodo = maps["Cobalt"], maps["Zenodo_IPM"]
     p_cob, p_zen = MOTORS["Cobalt"]["pole_pairs"], MOTORS["Zenodo_IPM"]["pole_pairs"]
-    save(pp.export_07_07_format(cobalt), OUTPUT / "Cobalt" / "cobalt_07-07_format.csv")
 
     # ------------------------------------------------------------------
     heading("3. Choose model settings by Cobalt cross-validation")

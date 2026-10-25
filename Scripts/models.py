@@ -45,7 +45,7 @@ from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 
 
 def current_angle(Id, Iq):
-    """Current angle beta in degrees, 07-07's definition: beta = atan2(-Id, Iq).
+    """Current angle beta in degrees, preprocess_v3's definition: beta = atan2(-Id, Iq).
     0 = pure +q (motoring), 90 = pure -d (field weakening)."""
     return np.degrees(np.arctan2(-np.asarray(Id, dtype=float), np.asarray(Iq, dtype=float)))
 

@@ -1,5 +1,5 @@
 """
-preprocess.py - winding table -> flux map.  Refactored from Inductance_Code_07-07.py.
+preprocess.py - winding table -> flux map.  Refactored from History/preprocess_v3.py, the original inductance script.
 
 Where this fits in the project
 ------------------------------
@@ -14,7 +14,7 @@ Id, Iq, psi_d, psi_q, the inductances and torque. The two inputs are:
 
 models.py then fits flux models to this table, and evaluate.py checks them.
 
-The steps (same methods and results as 07-07)
+The steps (same methods and results as preprocess_v3)
 ---------------------------------------------
   1. load_winding_table()  read the CSV and check it is usable
   2. rotor_angle()         rotor electrical angle at every step, read from the
@@ -26,10 +26,10 @@ The steps (same methods and results as 07-07)
   5. scale()               2-turn 2D model -> real machine (turns ratio, stack factor)
   6. pm_flux()             psi_pm and the cross-saturated psi_pm_eff(Iq)
   7. grid_inductances()    incremental inductances by finite differences on the
-                           FEA grid, and apparent inductances, as in 07-07
+                           FEA grid, and apparent inductances, as in preprocess_v3
   build_flux_map() runs all seven and adds torque.
 
-What changed from 07-07, and why
+What changed from preprocess_v3, and why
 --------------------------------
   * The code is split into functions, and the settings (file, turns ratio,
     stack factor, pole pairs) are arguments rather than constants at the top.
@@ -37,7 +37,7 @@ What changed from 07-07, and why
     documented with pdoc. Cobalt: turns_ratio=33/2, stack_factor=0.9,
     pole_pairs=5. Zenodo: 1, 1, 8.
   * The Park transform of the inductance matrix is done for all rows at once
-    (vectorised). 07-07's row-by-row iterrows loop is kept, selectable with
+    (vectorised). preprocess_v3's row-by-row iterrows loop is kept, selectable with
     inductance_method="loop", so evaluate.py can time the two against each
     other. Both give the same numbers.
   * Steps per electrical cycle use the MEAN rotor-angle step instead of the
@@ -46,9 +46,9 @@ What changed from 07-07, and why
   * The incremental-inductance table is assembled without DataFrame.stack(),
     and merged with how="left". The results are the same, but the J = 0 rows
     are kept on every pandas version.
-  * Torque now uses the flux formula (derive.torque_from_flux). 07-07's
+  * Torque now uses the flux formula (derive.torque_from_flux). preprocess_v3's
     matrix-inductance formula is kept as the column Torque_matrix_Nm for
-    comparison, and export_07_07_format() gives 07-07's CSV layout.
+    comparison only (evaluate.torque_formula_comparison).
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ INDUCTANCE_COLUMNS = [c for c in REQUIRED_COLUMNS if c.startswith("L(")]
 
 
 # ============================================================================
-# PARK / CLARKE (amplitude-invariant, 2/3 convention) - unchanged from 07-07
+# PARK / CLARKE (amplitude-invariant, 2/3 convention) - unchanged from preprocess_v3
 # ============================================================================
 def park_vec(a, b, c, theta):
     """abc -> dq0 for a vector quantity (current, flux, voltage) at rotor
@@ -103,7 +103,7 @@ def park_matrix(theta):
 
 def dq_inductances_matrix(row, theta):
     """dq transform of the FEA's abc inductance matrix for ONE row:
-    L_dq0 = T @ L_abc @ inv(T). Returns (Ld, Lq). This is 07-07's per-row
+    L_dq0 = T @ L_abc @ inv(T). Returns (Ld, Lq). This is preprocess_v3's per-row
     version, used by inductance_method="loop"."""
     T = park_matrix(theta)
     L = np.array([
@@ -182,7 +182,7 @@ def load_winding_table(path):
 
 
 def working_columns(data):
-    """RAW COLUMNS -> WORKING COLUMNS (unit prefixes only), as in 07-07.
+    """RAW COLUMNS -> WORKING COLUMNS (unit prefixes only), as in preprocess_v3.
     Inductances uH/nH -> H, currents mA -> A, flux already in Wb."""
     data["Laa"] = data["L(Phase_A,Phase_A) [uH]"] * 1e-6
     data["Lbb"] = data["L(Phase_B,Phase_B) [uH]"] * 1e-6
@@ -210,7 +210,7 @@ def working_columns(data):
 def rotor_angle(raw, rotor_mode="from_flux", rotor_ref_deg=0.0, auto_align=True,
                 init_period_to_remove=0.5, num_periods=1.5, elec_deg_per_cycle=360.0,
                 verbose=True):
-    """Add the rotor electrical angle "theta" [rad] to every row (07-07 logic).
+    """Add the rotor electrical angle "theta" [rad] to every row (preprocess_v3 logic).
 
     rotor_mode:
       "from_flux" (default) - at no load the flux points along the d-axis, so
@@ -229,7 +229,7 @@ def rotor_angle(raw, rotor_mode="from_flux", rotor_ref_deg=0.0, auto_align=True,
     n_steps_col = int(raw[COL_NSTEPS].iloc[0])
     block = n_steps_col + 1          # rows per operating point (25 Cobalt, 61 Zenodo)
 
-    # ---- which rows to keep (07-07 "LOAD" section) ----
+    # ---- which rows to keep (preprocess_v3 "LOAD" section) ----
     if rotor_mode == "sweep":
         remove_rows = int(np.floor(n_steps_col * init_period_to_remove / num_periods))
         idx = (np.arange(len(raw))
@@ -253,7 +253,7 @@ def rotor_angle(raw, rotor_mode="from_flux", rotor_ref_deg=0.0, auto_align=True,
         ang = np.unwrap(np.arctan2(q0, d0).reshape(-1, block), axis=1)
         theta_step = np.unwrap(np.angle(np.exp(1j * ang).mean(axis=0)))   # circular mean per step
 
-        # Mean step (07-07 used the median; see the module docstring)
+        # Mean step (preprocess_v3 used the median; see the module docstring)
         step_deg = np.rad2deg(np.mean(np.diff(theta_step)))
         span_deg = np.rad2deg(theta_step[-1] - theta_step[0])
         n_per_cycle = int(round(360.0 / step_deg))
@@ -304,7 +304,7 @@ def dq_per_row(data, inductance_method="vectorised"):
 
     inductance_method:
       "vectorised" - T @ L @ inv(T) for every row at once (default)
-      "loop"       - 07-07's row-by-row iterrows loop (slow; kept for timing)
+      "loop"       - preprocess_v3's row-by-row iterrows loop (slow; kept for timing)
     Both compute exactly the same matrix product.
     """
     th = data["theta"].to_numpy()
@@ -316,7 +316,7 @@ def dq_per_row(data, inductance_method="vectorised"):
     data["psi_d_raw"], data["psi_q_raw"] = d_f, q_f
 
     if inductance_method == "loop":
-        # 07-07, unchanged: one 3x3 matrix product per row
+        # preprocess_v3, unchanged: one 3x3 matrix product per row
         Ldm, Lqm = [], []
         for _, row in data.iterrows():
             a, b = dq_inductances_matrix(row, row["theta"])
@@ -328,7 +328,7 @@ def dq_per_row(data, inductance_method="vectorised"):
         L[:, 1, 0], L[:, 1, 1], L[:, 1, 2] = data["Lba"], data["Lbb"], data["Lbc"]
         L[:, 2, 0], L[:, 2, 1], L[:, 2, 2] = data["Lca"], data["Lcb"], data["Lcc"]
         T = park_matrix_stack(th)
-        D = T @ L @ np.linalg.inv(T)            # same product as 07-07, all rows at once
+        D = T @ L @ np.linalg.inv(T)            # same product as preprocess_v3, all rows at once
         Ldm, Lqm = D[:, 0, 0], D[:, 1, 1]
     else:
         raise ValueError("inductance_method must be 'vectorised' or 'loop'")
@@ -374,7 +374,7 @@ def scale(m, turns_ratio, stack_factor):
 # 6. PM FLUX
 # ============================================================================
 def pm_flux(m, verbose=True):
-    """psi_pm (no-load psi_d) and psi_pm_eff(Iq), as in 07-07.
+    """psi_pm (no-load psi_d) and psi_pm_eff(Iq), as in preprocess_v3.
 
     psi_pm_eff(Iq) := psi_d along the Id = 0 line. Q-axis current saturates iron
     shared with the magnet flux path, so the flux the magnets effectively link
@@ -403,7 +403,7 @@ def pm_flux(m, verbose=True):
 
 
 # ============================================================================
-# 7. INDUCTANCES ON THE FEA GRID (07-07's incremental + apparent sections)
+# 7. INDUCTANCES ON THE FEA GRID (preprocess_v3's incremental + apparent sections)
 # ============================================================================
 def grid_inductances(m):
     """Incremental and apparent inductances directly from the FEA points.
@@ -416,7 +416,7 @@ def grid_inductances(m):
     Apparent: Ld_app = (psi_d - psi_pm_eff)/Id, Lq_app = psi_q/Iq. The 0/0
     points are filled with their limits, the incremental values.
 
-    Also Saliency = Lq_matrix / Ld_matrix (07-07's exported saliency).
+    Also Saliency = Lq_matrix / Ld_matrix (preprocess_v3's exported saliency).
     """
     Jv = np.sort(m[COL_J].unique())
     Tv = np.sort(m[COL_TIMING].unique())
@@ -450,7 +450,7 @@ def grid_inductances(m):
             Ldd[i, j], Ldq[i, j] = gd
             Lqd[i, j], Lqq[i, j] = gq
 
-    # Back to one row per operating point (the same as 07-07's .stack(), but
+    # Back to one row per operating point (the same as preprocess_v3's .stack(), but
     # without dropping the NaN J=0 rows on older pandas versions)
     JJ, TT = np.meshgrid(Jv, Tv, indexing="ij")
     inc = pd.DataFrame({COL_J: JJ.ravel(), COL_TIMING: TT.ravel(),
@@ -474,7 +474,7 @@ def grid_inductances(m):
     m["Ld_app"] = m["Ld_app"].fillna(pure_d.iloc[0] if len(pure_d) else np.nan)
     m["Lq_app"] = m["Lq_app"].fillna(pure_q.iloc[0] if len(pure_q) else np.nan)
 
-    # Saliency from the matrix inductances, as 07-07 exported it
+    # Saliency from the matrix inductances, as preprocess_v3 exported it
     m["Saliency"] = m["Lq_matrix"] / m["Ld_matrix"]
     return m
 
@@ -516,7 +516,7 @@ def build_flux_map(path, turns_ratio, stack_factor, pole_pairs, rotor_mode="from
       Ld_app, Lq_app [H]                    apparent (secant)
       Saliency                              Lq_matrix / Ld_matrix
       Torque_Nm                             flux formula, 1.5 p (psi_d Iq - psi_q Id)
-      Torque_matrix_Nm                      07-07's matrix formula (comparison)
+      Torque_matrix_Nm                      preprocess_v3's matrix formula (comparison)
       Imag [A], beta [deg]                  current magnitude and angle
       Torque_FEA_Nm                         only if fea_torque_csv is given
     """
@@ -528,7 +528,7 @@ def build_flux_map(path, turns_ratio, stack_factor, pole_pairs, rotor_mode="from
     m, psi_pm = pm_flux(m, verbose)                                  # 6
     m = grid_inductances(m)                                          # 7
 
-    # Torque: the flux formula is now the main one. 07-07's formula is kept
+    # Torque: the flux formula is now the main one. preprocess_v3's formula is kept
     # beside it so the two can be compared (report section 4).
     m["Torque_Nm"] = torque_from_flux(m["Psi_d"], m["Psi_q"], m["Id"], m["Iq"], pole_pairs)
     m["Torque_matrix_Nm"] = matrix_torque(m["Psi_pm_eff"], m["Ld_matrix"], m["Lq_matrix"],
@@ -544,7 +544,7 @@ def build_flux_map(path, turns_ratio, stack_factor, pole_pairs, rotor_mode="from
 
 
 def print_diagnostics(m):
-    """07-07's console comparison of the inductance definitions, plus peak torque."""
+    """preprocess_v3's console comparison of the inductance definitions, plus peak torque."""
     print("\n--- Inductance definitions compared (uH, real machine) ---")
     sub = m.dropna(subset=["Lq_inc"])
     print(f"Lq: incremental {sub.Lq_inc.min()*1e6:6.0f}..{sub.Lq_inc.max()*1e6:4.0f} | "
@@ -556,26 +556,12 @@ def print_diagnostics(m):
     print(f"cross-coupling Ldq_inc: {np.nanmin(m.Ldq_inc)*1e6:.0f}..{np.nanmax(m.Ldq_inc)*1e6:.0f} uH")
     peak = m.loc[m["Torque_Nm"].idxmax()]
     print(f"\nPeak torque (flux formula) {peak.Torque_Nm:.2f} Nm at |I|={peak.Imag:.0f} A, "
-          f"beta={peak.beta:.0f} deg   [07-07 matrix formula peak: {m.Torque_matrix_Nm.max():.2f} Nm]")
+          f"beta={peak.beta:.0f} deg   [preprocess_v3 matrix formula peak: {m.Torque_matrix_Nm.max():.2f} Nm]")
 
 
 # ============================================================================
 # HELPERS FOR THE LATER STAGES
 # ============================================================================
-def export_07_07_format(m):
-    """The exact table 07-07 saved as pmsm_map_data.csv (matrix Ld/Lq and the
-    matrix torque formula), in case the inverter team still needs the old format.
-    run_all.py saves it as Output_Data/Cobalt/cobalt_07-07_format.csv."""
-    out = m[["Id", "Iq", "Psi_d", "Psi_q", "Psi_mag", "Ld_matrix", "Lq_matrix",
-             "Saliency", "Torque_matrix_Nm"]].copy()
-    out = out.rename(columns={"Ld_matrix": "Ld", "Lq_matrix": "Lq",
-                              "Torque_matrix_Nm": "Torque_Nm"})
-    out.insert(0, "Psi_pm_eff", m["Psi_pm_eff"].to_numpy())
-    for c in ["Ld", "Lq"]:
-        out[c + "_uH"] = out[c] * 1e6
-    return out
-
-
 def unique_operating_points(m):
     """Drop repeated physical operating points before fitting a model.
 
@@ -600,7 +586,7 @@ def base_values(m, pole_pairs):
 
 
 def plot_flux_map(m, title="", path=None, show=False):
-    """07-07's 2x3 scatter of the flux map (torque panel now uses the flux formula).
+    """preprocess_v3's 2x3 scatter of the flux map (torque panel now uses the flux formula).
     Saved to `path` if given; shown on screen only if show=True."""
     import matplotlib
     if not show:

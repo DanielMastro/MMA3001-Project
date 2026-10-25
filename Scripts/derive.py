@@ -47,7 +47,7 @@ def torque_from_flux(psi_d, psi_q, i_d, i_q, pole_pairs):
 
 
 def matrix_torque(psi_pm_eff, Ld, Lq, i_d, i_q, pole_pairs):
-    """07-07's torque formula: T = 1.5 * p * (psi_pm_eff + (Ld - Lq) * Id) * Iq.
+    """preprocess_v3's torque formula: T = 1.5 * p * (psi_pm_eff + (Ld - Lq) * Id) * Iq.
 
     Kept only as the ALTERNATIVE that torque_from_flux() is compared against.
     It equals the flux formula only when Ld and Lq are apparent inductances that
@@ -125,12 +125,12 @@ def apparent_inductance(model, Id, Iq, rel_tol=0.02, abs_tol=0.5):
         Ld = (psi_d(Id, Iq) - psi_pm_eff(Iq)) / Id     with psi_pm_eff(Iq) = psi_d(0, Iq)
         Lq =  psi_q(Id, Iq) / Iq
 
-    psi_pm_eff(Iq) is psi_d along the Id = 0 line, the same definition 07-07 used
+    psi_pm_eff(Iq) is psi_d along the Id = 0 line, the same definition preprocess_v3 used
     (it falls with |Iq| because of cross-saturation).
 
     Near the axes these are 0/0, so where |Id| (or |Iq|) is below
     max(rel_tol * |I|, abs_tol) the limiting value, the incremental inductance,
-    is used instead. The 2 % and 0.5 A thresholds are 07-07's.
+    is used instead. The 2 % and 0.5 A thresholds are preprocess_v3's.
 
     Returns a dict with "Ld", "Lq" (H) and "Psi_pm_eff" (Wb).
     """
